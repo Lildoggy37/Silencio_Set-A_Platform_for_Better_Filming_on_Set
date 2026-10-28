@@ -19,10 +19,12 @@ htmlcov/
 
 # Frontend
 node_modules/
+.npm-cache/
 dist/
 coverage/
 playwright-report/
 test-results/
+*.tsbuildinfo
 
 # Private files and persistent service data
 runtime/

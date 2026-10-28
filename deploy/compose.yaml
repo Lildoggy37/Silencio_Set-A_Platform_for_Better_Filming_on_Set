@@ -1,0 +1,118 @@
+name: silencio-set
+
+x-backend-environment: &backend-environment
+  APP_ENV: development
+  APP_TIMEZONE: Asia/Shanghai
+  DATABASE_URL: postgresql+asyncpg://silencio:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/silencio
+  REDIS_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD}@redis:6379/0
+  CELERY_BROKER_URL: amqp://silencio:${RABBITMQ_PASSWORD:?set RABBITMQ_PASSWORD}@rabbitmq:5672/silencio
+  DIANE_ENABLED: "false"
+  AUTH_ENABLED: ${AUTH_ENABLED:-false}
+  AUTH_SECRET: ${AUTH_SECRET:-}
+  AUTH_COOKIE_SECURE: "false"
+  AUTH_ALLOWED_ORIGINS: '["http://127.0.0.1:5173","http://localhost:5173","http://127.0.0.1:8000","http://localhost:8000"]'
+  MAIL_ENABLED: ${MAIL_ENABLED:-false}
+  MAIL_PAYLOAD_KEY: ${MAIL_PAYLOAD_KEY:-}
+  MAIL_HOST: mailpit
+  MAIL_PORT: "1025"
+  MAIL_MODE: local
+  MAIL_FROM: silencio@example.com
+  INVITATION_PUBLIC_ORIGIN: ${INVITATION_PUBLIC_ORIGIN:-http://127.0.0.1:5173}
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: silencio
+      POSTGRES_USER: silencio
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports: ["127.0.0.1:5432:5432"]
+    volumes: ["postgres-data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U silencio -d silencio"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  redis:
+    image: redis:7-alpine
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$$REDIS_PASSWORD\""]
+    ports: ["127.0.0.1:6379:6379"]
+    volumes: ["redis-data:/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: silencio
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+      RABBITMQ_DEFAULT_VHOST: silencio
+    ports: ["127.0.0.1:5672:5672", "127.0.0.1:15672:15672"]
+    volumes: ["rabbitmq-data:/var/lib/rabbitmq"]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  api:
+    build: ../backend
+    environment: *backend-environment
+    ports: ["127.0.0.1:8000:8000"]
+    volumes: ["private-files:/app/storage"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health/live', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
+  worker:
+    build: ../backend
+    environment: *backend-environment
+    command: ["celery", "-A", "silencio_set.worker_entry:app", "worker", "--loglevel=WARNING", "--concurrency=1", "-Q", "notifications,documents"]
+    volumes: ["private-files:/app/storage"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+
+  dispatcher:
+    profiles: ["mail"]
+    build: ../backend
+    environment: *backend-environment
+    command: ["python", "-m", "silencio_set.jobs.dispatcher"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+
+  notification-consumer:
+    profiles: ["notifications"]
+    build: ../backend
+    environment: *backend-environment
+    command: ["python", "-m", "silencio_set.notifications.consumer"]
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  mailpit:
+    profiles: ["mail"]
+    image: axllent/mailpit:v1.31.5
+    environment:
+      MP_MAX_MESSAGES: "1000"
+    ports: ["127.0.0.1:1025:1025", "127.0.0.1:8025:8025"]
+
+volumes:
+  postgres-data:
+  redis-data:
+  rabbitmq-data:
+  private-files:

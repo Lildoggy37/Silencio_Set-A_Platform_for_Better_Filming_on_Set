@@ -1,0 +1,34 @@
+"""Preparation tasks, history, idempotency receipts and notification intents."""
+from alembic import op
+import sqlalchemy as sa
+
+revision = "0006_tasks"
+down_revision = "0005_invitations"
+branch_labels = None
+depends_on = None
+
+STATEMENTS = [
+    "\nCREATE TABLE tasks (\n\tid UUID NOT NULL, \n\tcrew_id UUID NOT NULL, \n\ttitle VARCHAR(100) NOT NULL, \n\tdescription VARCHAR(3000), \n\towner_member_id UUID NOT NULL, \n\treviewer_member_id UUID NOT NULL, \n\tcreated_by_member_id UUID NOT NULL, \n\tdue_at TIMESTAMP WITH TIME ZONE NOT NULL, \n\tstatus VARCHAR(20) DEFAULT 'pending' NOT NULL, \n\tcancel_reason VARCHAR(500), \n\tlock_version INTEGER DEFAULT 1 NOT NULL, \n\tcreated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, \n\tupdated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, \n\tCONSTRAINT pk_tasks PRIMARY KEY (id), \n\tCONSTRAINT uq_tasks_crew_id_id UNIQUE (crew_id, id), \n\tCONSTRAINT fk_tasks_owner_member_id_member FOREIGN KEY(crew_id, owner_member_id) REFERENCES crew_members (crew_id, id) ON DELETE RESTRICT, \n\tCONSTRAINT fk_tasks_reviewer_member_id_member FOREIGN KEY(crew_id, reviewer_member_id) REFERENCES crew_members (crew_id, id) ON DELETE RESTRICT, \n\tCONSTRAINT fk_tasks_created_by_member_id_member FOREIGN KEY(crew_id, created_by_member_id) REFERENCES crew_members (crew_id, id) ON DELETE RESTRICT, \n\tCONSTRAINT ck_tasks_title_valid CHECK (char_length(title) BETWEEN 1 AND 100 AND title = btrim(title) AND title !~ '[[:cntrl:]]'), \n\tCONSTRAINT ck_tasks_description_valid CHECK (description IS NULL OR char_length(description) BETWEEN 1 AND 3000), \n\tCONSTRAINT ck_tasks_status_valid CHECK (status IN ('pending','in_progress','pending_review','completed','cancelled')), \n\tCONSTRAINT ck_tasks_cancel_pair CHECK ((status = 'cancelled' AND cancel_reason IS NOT NULL AND char_length(cancel_reason) BETWEEN 1 AND 500) OR (status <> 'cancelled' AND cancel_reason IS NULL)), \n\tCONSTRAINT ck_tasks_version_valid CHECK (lock_version BETWEEN 1 AND 2147483647), \n\tCONSTRAINT fk_tasks_crew_id_crews FOREIGN KEY(crew_id) REFERENCES crews (id) ON DELETE RESTRICT\n)\n\n",
+    "CREATE INDEX ix_tasks_crew_due ON tasks (crew_id, due_at, id)",
+    "CREATE INDEX ix_tasks_crew_owner_status ON tasks (crew_id, owner_member_id, status)",
+    "CREATE INDEX ix_tasks_crew_reviewer_status ON tasks (crew_id, reviewer_member_id, status)",
+    "\nCREATE TABLE task_action_receipts (\n\tid UUID NOT NULL, \n\tcrew_id UUID NOT NULL, \n\tuser_id UUID NOT NULL, \n\ttask_id UUID NOT NULL, \n\tkey_digest VARCHAR(64) NOT NULL, \n\trequest_digest VARCHAR(64) NOT NULL, \n\tresponse_snapshot JSONB NOT NULL, \n\tcreated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, \n\tCONSTRAINT pk_task_action_receipts PRIMARY KEY (id), \n\tCONSTRAINT fk_task_action_receipts_crew_id_tasks FOREIGN KEY(crew_id, task_id) REFERENCES tasks (crew_id, id) ON DELETE RESTRICT, \n\tCONSTRAINT uq_task_receipts_actor_key UNIQUE (crew_id, user_id, key_digest), \n\tCONSTRAINT ck_task_action_receipts_digests_valid CHECK (key_digest ~ '^[a-f0-9]{64}$' AND request_digest ~ '^[a-f0-9]{64}$'), \n\tCONSTRAINT fk_task_action_receipts_user_id_users FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE RESTRICT\n)\n\n",
+    "\nCREATE TABLE task_change_events (\n\tid UUID NOT NULL, \n\tcrew_id UUID NOT NULL, \n\ttask_id UUID NOT NULL, \n\ttask_version INTEGER NOT NULL, \n\tkind VARCHAR(30) NOT NULL, \n\tactor_member_id UUID NOT NULL, \n\trecipient_member_ids JSONB NOT NULL, \n\tdispatch_status VARCHAR(20) DEFAULT 'pending' NOT NULL, \n\tcreated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, \n\tCONSTRAINT pk_task_change_events PRIMARY KEY (id), \n\tCONSTRAINT fk_task_change_events_crew_id_tasks FOREIGN KEY(crew_id, task_id) REFERENCES tasks (crew_id, id) ON DELETE RESTRICT, \n\tCONSTRAINT fk_task_change_events_crew_id_crew_members FOREIGN KEY(crew_id, actor_member_id) REFERENCES crew_members (crew_id, id) ON DELETE RESTRICT, \n\tCONSTRAINT uq_task_events_version UNIQUE (task_id, task_version), \n\tCONSTRAINT ck_task_change_events_dispatch_status_valid CHECK (dispatch_status IN ('pending','dispatched','failed'))\n)\n\n",
+    "\nCREATE TABLE task_collaborators (\n\tcrew_id UUID NOT NULL, \n\ttask_id UUID NOT NULL, \n\tmember_id UUID NOT NULL, \n\tCONSTRAINT pk_task_collaborators PRIMARY KEY (crew_id, task_id, member_id), \n\tCONSTRAINT fk_task_collaborators_crew_id_tasks FOREIGN KEY(crew_id, task_id) REFERENCES tasks (crew_id, id) ON DELETE RESTRICT, \n\tCONSTRAINT fk_task_collaborators_crew_id_crew_members FOREIGN KEY(crew_id, member_id) REFERENCES crew_members (crew_id, id) ON DELETE RESTRICT\n)\n\n",
+    "CREATE INDEX ix_task_collaborators_member ON task_collaborators (crew_id, member_id, task_id)",
+    "\nCREATE TABLE task_submissions (\n\tid UUID NOT NULL, \n\tcrew_id UUID NOT NULL, \n\ttask_id UUID NOT NULL, \n\tsubmission_no INTEGER NOT NULL, \n\tsubmitted_by UUID NOT NULL, \n\tcompletion_note VARCHAR(2000) NOT NULL, \n\treview_status VARCHAR(20) DEFAULT 'pending' NOT NULL, \n\treviewed_by UUID, \n\treview_note VARCHAR(500), \n\tsubmitted_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, \n\treviewed_at TIMESTAMP WITH TIME ZONE, \n\tCONSTRAINT pk_task_submissions PRIMARY KEY (id), \n\tCONSTRAINT fk_task_submissions_crew_id_tasks FOREIGN KEY(crew_id, task_id) REFERENCES tasks (crew_id, id) ON DELETE RESTRICT, \n\tCONSTRAINT fk_task_submissions_submitted_by_member FOREIGN KEY(crew_id, submitted_by) REFERENCES crew_members (crew_id, id) ON DELETE RESTRICT, \n\tCONSTRAINT fk_task_submissions_reviewed_by_member FOREIGN KEY(crew_id, reviewed_by) REFERENCES crew_members (crew_id, id) ON DELETE RESTRICT, \n\tCONSTRAINT uq_task_submissions_number UNIQUE (task_id, submission_no), \n\tCONSTRAINT ck_task_submissions_number_positive CHECK (submission_no >= 1), \n\tCONSTRAINT ck_task_submissions_note_valid CHECK (char_length(completion_note) BETWEEN 1 AND 2000), \n\tCONSTRAINT ck_task_submissions_review_status_valid CHECK (review_status IN ('pending','accepted','rejected','cancelled')), \n\tCONSTRAINT ck_task_submissions_review_pair CHECK ((review_status = 'pending' AND reviewed_by IS NULL AND reviewed_at IS NULL) OR (review_status <> 'pending' AND reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL AND reviewed_at >= submitted_at)), \n\tCONSTRAINT ck_task_submissions_rejection_note CHECK (review_status <> 'rejected' OR (review_note IS NOT NULL AND char_length(review_note) BETWEEN 1 AND 500))\n)\n\n",
+    "CREATE UNIQUE INDEX uq_task_submissions_current_pending ON task_submissions (task_id) WHERE review_status = 'pending'"
+]
+
+
+def upgrade():
+    for statement in STATEMENTS:
+        op.execute(sa.DDL(statement))
+
+
+def downgrade():
+    op.drop_table("task_submissions")
+    op.drop_table("task_collaborators")
+    op.drop_table("task_change_events")
+    op.drop_table("task_action_receipts")
+    op.drop_table("tasks")

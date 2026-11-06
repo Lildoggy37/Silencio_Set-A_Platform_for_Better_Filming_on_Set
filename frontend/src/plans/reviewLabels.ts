@@ -1,0 +1,1 @@
+export const planReviewNames: Record<string, string> = { availability_changed: '人员档期有变化', script_changed: '剧本工作版本有变化', stock_changed: '相关耗材库存有变化', casting_changed: '人物与演员绑定有变化', casting_role_changed: '演员岗位有变化', source_review_changed: '场戏来源复核结论有变化' }

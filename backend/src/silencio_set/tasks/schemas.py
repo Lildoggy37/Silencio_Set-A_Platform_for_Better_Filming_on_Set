@@ -26,10 +26,21 @@ class TaskCreate(Input):
     title: StrictStr
     description: StrictStr | None = None
     owner_member_id: UUID
-    reviewer_member_id: UUID
+    reviewer_member_id: UUID | None = None
+    requires_review: bool | None = Field(default=None, strict=True)
     due_at: AwareDatetime
     collaborator_member_ids: list[UUID] = Field(default_factory=list, max_length=20)
     scene_id: None = None  # Reject non-null until the real scene model is available.
+
+    @model_validator(mode="after")
+    def review_policy(self):
+        if self.requires_review is None:
+            object.__setattr__(self, "requires_review", self.reviewer_member_id is not None)
+        if self.requires_review and self.reviewer_member_id is None:
+            raise ValueError("Review tasks require a reviewer")
+        if not self.requires_review:
+            object.__setattr__(self, "reviewer_member_id", self.owner_member_id)
+        return self
 
     @field_validator("due_at", mode="before")
     @classmethod
@@ -63,6 +74,7 @@ class TaskPatch(VersionInput):
     description: StrictStr | None = None
     owner_member_id: UUID | None = None
     reviewer_member_id: UUID | None = None
+    requires_review: bool | None = Field(default=None, strict=True)
     due_at: AwareDatetime | None = None
     collaborator_member_ids: list[UUID] | None = Field(default=None, max_length=20)
 
@@ -123,6 +135,7 @@ class TaskView(BaseModel):
     description: str | None
     owner_member_id: UUID
     reviewer_member_id: UUID
+    requires_review: bool = True
     created_by_member_id: UUID
     collaborator_member_ids: list[UUID]
     due_at: datetime
@@ -140,7 +153,7 @@ class SubmissionView(BaseModel):
     submission_no: int
     submitted_by: UUID
     completion_note: str
-    review_status: Literal["pending", "accepted", "rejected", "cancelled"]
+    review_status: Literal["pending", "accepted", "rejected", "cancelled", "completed"]
     reviewed_by: UUID | None
     review_note: str | None
     submitted_at: datetime

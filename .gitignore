@@ -28,6 +28,9 @@ test-results/
 
 # Private files and persistent service data
 runtime/
+# Local PDF layout samples and rendering intermediates
+/output/pdf/
+/tmp/pdfs/
 uploads/
 storage/
 backups/
@@ -35,6 +38,7 @@ backups/
 *.sqlite
 *.sqlite3
 *.log
+erl_crash.dump
 
 # Editor / OS
 .idea/

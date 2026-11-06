@@ -32,6 +32,7 @@ function start(handler: (path: string, options?: RequestInit) => Response | Prom
     if (path.includes('/crews?')) return Promise.resolve(ok(page([crew])))
     if (path.endsWith(`/crews/${crewId}`)) return Promise.resolve(ok(crew))
     if (path.includes('/members?')) return Promise.resolve(ok(page([member])))
+    if (path.includes('/checkouts?')) return Promise.resolve(ok(page([])))
     if (path.includes('/resource-reservations?')) return Promise.resolve(ok(page([reservation])))
     if (path.includes('/resources?')) return Promise.resolve(ok(page([resource])))
     if (path.endsWith(`/resources/${resourceId}`)) return Promise.resolve(ok(resource))
@@ -43,14 +44,56 @@ function start(handler: (path: string, options?: RequestInit) => Response | Prom
   render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })}><App /></QueryClientProvider>)
   return fetcher
 }
-async function open() {
+async function open(name = '摄影机') {
   fireEvent.click(await screen.findByRole('button', { name: '选择或创建剧组' }))
   fireEvent.click(await screen.findByRole('button', { name: '学生剧组 · 雨停之前' }))
-  await screen.findByText('学生剧组 · 雨停之前')
+  await screen.findByText('《雨停之前》', { selector: '.project-context strong' })
   fireEvent.click(screen.getByRole('button', { name: '资源' }))
-  await screen.findByRole('button', { name: '查看资源摄影机' })
+  await screen.findByRole('button', { name: `查看资源${name}` })
 }
-async function openDetail() { await open(); fireEvent.click(screen.getByRole('button', { name: '查看资源摄影机' })); await screen.findByRole('button', { name: '查询余量' }) }
+async function openDetail() { await open(); fireEvent.click(screen.getByRole('button', { name: '查看资源摄影机' })); await screen.findByRole('button', { name: '时段余量' }) }
+
+test('reservation submits in one step and an uncertain retry keeps its original body and key', async () => {
+  const writes: RequestInit[] = []
+  start((path, options) => {
+    if (path.endsWith('/resource-reservations') && options?.method === 'POST') {
+      writes.push(options)
+      if (writes.length === 1) return Promise.reject(new TypeError('lost response'))
+      return ok({ ...reservation, ...JSON.parse(String(options.body)) }, 201)
+    }
+  })
+  await openDetail()
+  fireEvent.click(screen.getByRole('button', { name: '申请预约' }))
+  fireEvent.change(screen.getByLabelText('预约开始'), { target: { value: '2099-01-01T09:00' } })
+  fireEvent.change(screen.getByLabelText('预约结束'), { target: { value: '2099-01-01T10:00' } })
+  fireEvent.submit(screen.getByRole('button', { name: '提交预约' }).closest('form')!)
+  const form = screen.getByLabelText('预约开始').closest('form')!
+  const retry = await within(form).findByText('用原请求重试')
+  expect(writes).toHaveLength(1)
+  expect(screen.queryByRole('button', { name: '核对本次操作' })).toBeNull()
+  await waitFor(() => expect(retry.closest('button')!.classList.contains('ant-btn-loading')).toBe(false))
+  fireEvent.click(retry)
+  await waitFor(() => expect(screen.queryByLabelText('预约开始')).toBeNull())
+  expect(writes).toHaveLength(2)
+  expect(writes[1].body).toBe(writes[0].body)
+  expect((writes[1].headers as Record<string, string>)['Idempotency-Key']).toBe((writes[0].headers as Record<string, string>)['Idempotency-Key'])
+})
+
+test('location resources expose the scouting gallery inside resource details', async () => {
+  const location = { ...resource, name: '教学楼走廊', resource_type: 'location', total_quantity: 1, unit: '处' }
+  start(path => {
+    if (path.includes('/resources?')) return ok(page([location]))
+    if (path.endsWith(`/resources/${resourceId}`)) return ok(location)
+    if (path.endsWith(`/locations/${resourceId}`)) return ok({ resource_id: resourceId, resource_name: location.name, resource_status: 'available', resource_lock_version: 1,
+      details: { address: '东侧教学楼', access_instructions: null, shooting_constraints: '下午有课程' }, photos: [], allowed_actions: [] })
+    return undefined
+  })
+  await open('教学楼走廊')
+  fireEvent.click(screen.getByRole('button', { name: '查看资源教学楼走廊' }))
+  expect(await screen.findByText('地址：东侧教学楼')).toBeTruthy()
+  expect(screen.getByText('拍摄限制：下午有课程')).toBeTruthy()
+  expect(screen.getByText('尚未上传勘景照片。')).toBeTruthy()
+})
 async function createDraft() {
   await open(); fireEvent.click(screen.getByRole('button', { name: '登记资源' }))
   fireEvent.change(await screen.findByLabelText('资源名称'), { target: { value: '收音杆' } })
@@ -125,7 +168,7 @@ test('approval uses the current booking version and does not run on opening the 
       return ok({ ...reservation, status: 'confirmed', reviewed_by: memberId, reviewed_at: '2026-10-28T01:00:00Z', lock_version: 2, allowed_actions: ['cancel'] })
     }
   })
-  await openDetail(); fireEvent.click(await screen.findByRole('button', { name: '批准预约' }))
+  await openDetail(); fireEvent.click(screen.getByRole('button', { name: '预约记录' })); fireEvent.click(await screen.findByRole('button', { name: '批准预约' }))
   expect(writes).toBe(0); fireEvent.click(screen.getByRole('button', { name: '核对本次操作' }))
   fireEvent.click(await screen.findByRole('button', { name: '确认提交' }))
   await waitFor(() => expect(writes).toBe(1))
@@ -139,7 +182,7 @@ test('capacity shows only approved aggregate use and labels physical inventory a
         total_quantity: 2, peak_confirmed_quantity: 1, minimum_remaining_quantity: 1, confirmed_reservation_count: 2, physical_inventory_status: 'not_implemented' })
     }
   })
-  await openDetail(); fireEvent.click(screen.getByRole('button', { name: '查询余量' }))
+  await openDetail(); fireEvent.click(screen.getByRole('button', { name: '时段余量' })); fireEvent.click(screen.getByRole('button', { name: '查询余量' }))
   await screen.findByText(/同时占用峰值 1 台，最少余量 1 台。尚未包含实物借还情况/)
   expect(fetcher.mock.calls.filter(([, options]) => options?.method && options.method !== 'GET')).toHaveLength(0)
 })
@@ -150,7 +193,7 @@ test('read-only viewers see no create, edit, authorize or approval controls', as
     if (path.endsWith(`/resources/${resourceId}`)) return ok({ ...resource, allowed_actions: [] })
     if (path.includes('/resource-reservations?')) return ok(page([{ ...reservation, allowed_actions: [] }]))
   })
-  await openDetail(); await screen.findByText('待审批 · 1 台')
+  await openDetail(); fireEvent.click(screen.getByRole('button', { name: '预约记录' })); await screen.findByText('待审批 · 1 台')
   for (const name of ['登记资源', '编辑资源', '负责人及审批授权', '申请预约', '批准预约', '拒绝预约', '取消预约']) expect(screen.queryByRole('button', { name })).toBeNull()
 })
 
@@ -158,12 +201,12 @@ test('resource responsibilities block membership exit and link to the resource d
   const fetcher = start(path => {
     if (path.includes('/resource-responsibilities?')) return ok({ ...page([{ kind: 'resource', id: resourceId, resource_id: resourceId, title: '摄影机', status: 'available', lock_version: 1, ends_at: null }]), member_id: memberId, blocking_total: 1, restricted_total: 0 })
   })
-  await open(); fireEvent.click(screen.getByRole('button', { name: '退出当前剧组' }))
+  await open(); fireEvent.click(screen.getByRole('button', { name: '剧组设置' })); fireEvent.click(await screen.findByRole('menuitem', { name: '退出当前剧组' }))
   const section = await screen.findByRole('region', { name: '资源交接检查' })
   const link = await within(section).findByRole('button', { name: '处理资源：摄影机' })
   expect(screen.getByRole('button', { name: '确认退出剧组' }).hasAttribute('disabled')).toBe(true)
   fireEvent.click(link)
-  await screen.findByRole('button', { name: '查询余量' })
+  await screen.findByRole('button', { name: '时段余量' })
   expect(fetcher.mock.calls.filter(([path]) => path.endsWith('/me/leave'))).toHaveLength(0)
 })
 
@@ -171,7 +214,7 @@ test('a failed resource responsibility check cannot be treated as zero blockers'
   const fetcher = start(path => {
     if (path.includes('/resource-responsibilities?')) return new Response(JSON.stringify({ error: { code: 'SERVICE_UNAVAILABLE' } }), { status: 503 })
   })
-  await open(); fireEvent.click(screen.getByRole('button', { name: '退出当前剧组' }))
+  await open(); fireEvent.click(screen.getByRole('button', { name: '剧组设置' })); fireEvent.click(await screen.findByRole('menuitem', { name: '退出当前剧组' }))
   await screen.findByText('API暂不可用，请检查本地服务是否已启动。')
   expect(screen.getByRole('button', { name: '确认退出剧组' }).hasAttribute('disabled')).toBe(true)
   expect(fetcher.mock.calls.filter(([path]) => path.endsWith('/me/leave'))).toHaveLength(0)
@@ -191,14 +234,18 @@ test('an unconfirmed edit preserves input and requires an explicit fresh version
     }
   })
   await openDetail(); fireEvent.click(screen.getByRole('button', { name: '编辑资源' }))
-  fireEvent.change(await screen.findByLabelText('资源名称'), { target: { value: '备用摄影机' } })
-  fireEvent.click(screen.getByRole('button', { name: '核对本次操作' })); fireEvent.click(screen.getByRole('button', { name: '确认提交' }))
-  const reload = await screen.findByRole('button', { name: '重新读取并保留草稿' })
-  expect((screen.getByLabelText('资源名称') as HTMLInputElement).value).toBe('备用摄影机')
-  expect(screen.getByRole('button', { name: '核对本次操作' }).hasAttribute('disabled')).toBe(true)
+  const nameInput = await screen.findByLabelText('资源名称')
+  // Keep accessibility queries inside the active editor instead of repeatedly
+  // walking the workspace and both underlying dialogs in jsdom.
+  const editor = within(nameInput.closest('[role="dialog"]') as HTMLElement)
+  fireEvent.change(nameInput, { target: { value: '备用摄影机' } })
+  fireEvent.click(editor.getByRole('button', { name: '核对本次操作' })); fireEvent.click(editor.getByRole('button', { name: '确认提交' }))
+  const reload = await editor.findByRole('button', { name: '重新读取并保留草稿' })
+  expect((editor.getByLabelText('资源名称') as HTMLInputElement).value).toBe('备用摄影机')
+  expect(editor.getByRole('button', { name: '核对本次操作' }).hasAttribute('disabled')).toBe(true)
   expect(writes).toBe(1); fireEvent.click(reload)
-  await waitFor(() => expect(screen.getByRole('button', { name: '核对本次操作' }).hasAttribute('disabled')).toBe(false))
-  expect(writes).toBe(1); fireEvent.click(screen.getByRole('button', { name: '核对本次操作' })); fireEvent.click(screen.getByRole('button', { name: '确认提交' }))
+  await waitFor(() => expect(editor.getByRole('button', { name: '核对本次操作' }).hasAttribute('disabled')).toBe(false))
+  expect(writes).toBe(1); fireEvent.click(editor.getByRole('button', { name: '核对本次操作' })); fireEvent.click(editor.getByRole('button', { name: '确认提交' }))
   await waitFor(() => expect(writes).toBe(2))
   expect(fetcher.mock.calls.filter(([, options]) => options?.method === 'PATCH')).toHaveLength(2)
 })

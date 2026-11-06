@@ -10,6 +10,8 @@ from silencio_set.api.crews import Page
 from silencio_set.api.tasks import IdempotencyKey
 from silencio_set.core.http import Envelope, ErrorEnvelope
 from silencio_set.resources.schemas import ResourceCreate, ResourcePatch, ResourceAuthorization, ResourcePage, ResourceView, ResourceAvailability, ReservationCreate, ReservationDecision, ReservationCancel, ReservationPage, ReservationView, ResourceResponsibilities
+from silencio_set.resources.custody_schemas import CheckoutInput, ReturnInput, CustodyAuthorization, CustodyAuthorizationView, CheckoutView, CheckoutPage
+from silencio_set.resources.stock import StockCreate, StockChange, StockAuthorization, StockView, StockPage, StockResult, MovementPage
 
 router = APIRouter(prefix="/api/v1/crews/{crew_id}", tags=["resources"], responses={
     code: {"model": ErrorEnvelope} for code in (401, 403, 404, 409, 413, 415, 422, 429, 500, 503)
@@ -99,3 +101,68 @@ async def cancel_reservation(crew_id: UUID, reservation_id: UUID, request: Reque
 async def responsibilities(crew_id: UUID, member_id: UUID, request: Request, page: Page = 1, page_size: int = Query(default=20, ge=1, le=20),
                            user=Depends(completed_user), service=Depends(resource_service)):
     return await run(request, user, service, "responsibilities", crew_id, member_id=member_id, page=page, page_size=page_size)
+
+
+@router.get("/resources/{resource_id}/checkouts", response_model=Envelope[CheckoutPage])
+async def checkouts(crew_id: UUID, resource_id: UUID, request: Request, page: Page = 1, page_size: int = Query(default=20, ge=1, le=20),
+                    user=Depends(completed_user), service=Depends(resource_service)):
+    return await run(request, user, service, "checkout_list", crew_id, resource_id=resource_id, page=page, page_size=page_size)
+
+
+@router.put("/resources/{resource_id}/custody-authorization", response_model=Envelope[CustodyAuthorizationView], dependencies=[Depends(csrf_browser)])
+async def custody_authorization(crew_id: UUID, resource_id: UUID, request: Request, body: CustodyAuthorization, idempotency_key: IdempotencyKey,
+                                user=Depends(completed_user), service=Depends(resource_service)):
+    return await run(request, user, service, "custody_authorize", crew_id, resource_id=resource_id, body=body, idempotency_key=str(idempotency_key))
+
+
+@router.post("/resource-reservations/{reservation_id}/checkouts", response_model=Envelope[CheckoutView], status_code=201, dependencies=[Depends(csrf_browser)])
+async def checkout(crew_id: UUID, reservation_id: UUID, request: Request, body: CheckoutInput, idempotency_key: IdempotencyKey,
+                   user=Depends(completed_user), service=Depends(resource_service)):
+    return await run(request, user, service, "checkout", crew_id, reservation_id=reservation_id, body=body, idempotency_key=str(idempotency_key))
+
+
+@router.post("/resource-checkouts/{checkout_id}/returns", response_model=Envelope[CheckoutView], dependencies=[Depends(csrf_browser)])
+async def resource_return(crew_id: UUID, checkout_id: UUID, request: Request, body: ReturnInput, idempotency_key: IdempotencyKey,
+                          user=Depends(completed_user), service=Depends(resource_service)):
+    return await run(request, user, service, "return_resource", crew_id, checkout_id=checkout_id, body=body, idempotency_key=str(idempotency_key))
+
+
+@router.get("/resource-checkouts/{checkout_id}", response_model=Envelope[CheckoutView])
+async def checkout_detail(crew_id: UUID, checkout_id: UUID, request: Request,
+                           user=Depends(completed_user), service=Depends(resource_service)):
+    return await run(request, user, service, "checkout_get", crew_id, checkout_id=checkout_id)
+
+
+@router.get("/consumables", response_model=Envelope[StockPage])
+async def consumables(crew_id: UUID, request: Request, page: Page = 1, page_size: int = Query(default=20, ge=1, le=20),
+                      user=Depends(completed_user), service=Depends(resource_service)):
+    return await run(request, user, service, "stock_list", crew_id, page=page, page_size=page_size)
+
+
+@router.post("/consumables", response_model=Envelope[StockResult], status_code=201, dependencies=[Depends(csrf_browser)])
+async def create_consumable(crew_id: UUID, request: Request, body: StockCreate, idempotency_key: IdempotencyKey,
+                            user=Depends(completed_user), service=Depends(resource_service)):
+    return await run(request, user, service, "stock_create", crew_id, body=body, idempotency_key=str(idempotency_key))
+
+
+@router.get("/consumables/{resource_id}", response_model=Envelope[StockView])
+async def consumable_detail(crew_id: UUID, resource_id: UUID, request: Request, user=Depends(completed_user), service=Depends(resource_service)):
+    return await run(request, user, service, "stock_get", crew_id, resource_id=resource_id)
+
+
+@router.get("/consumables/{resource_id}/movements", response_model=Envelope[MovementPage])
+async def stock_movements(crew_id: UUID, resource_id: UUID, request: Request, page: Page = 1, page_size: int = Query(default=20, ge=1, le=20),
+                          user=Depends(completed_user), service=Depends(resource_service)):
+    return await run(request, user, service, "stock_movements", crew_id, resource_id=resource_id, page=page, page_size=page_size)
+
+
+@router.post("/consumables/{resource_id}/movements", response_model=Envelope[StockResult], status_code=201, dependencies=[Depends(csrf_browser)])
+async def change_stock(crew_id: UUID, resource_id: UUID, request: Request, body: StockChange, idempotency_key: IdempotencyKey,
+                        user=Depends(completed_user), service=Depends(resource_service)):
+    return await run(request, user, service, "stock_change", crew_id, resource_id=resource_id, body=body, idempotency_key=str(idempotency_key))
+
+
+@router.put("/consumables/{resource_id}/authorization", response_model=Envelope[CustodyAuthorizationView], dependencies=[Depends(csrf_browser)])
+async def stock_authorization(crew_id: UUID, resource_id: UUID, request: Request, body: StockAuthorization, idempotency_key: IdempotencyKey,
+                               user=Depends(completed_user), service=Depends(resource_service)):
+    return await run(request, user, service, "stock_authorize", crew_id, resource_id=resource_id, body=body, idempotency_key=str(idempotency_key))

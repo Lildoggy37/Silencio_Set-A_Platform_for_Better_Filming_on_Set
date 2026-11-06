@@ -6,9 +6,15 @@ import { createCrewClient } from './crews'
 const crew = '22222222-2222-4222-8222-222222222222'
 const id = '33333333-3333-4333-8333-333333333333'
 const task = '44444444-4444-4444-8444-444444444444'
-const notice = { id, event_type: 'task.create', title: '新任务', summary: '请核对', task_id: task, task_title: '分镜', created_at: '2026-10-28T00:00:00Z',
-  object_version: 1, current_object_version: 1, is_current: true, requires_confirmation: true, read_at: null, confirmed_at: null }
+const notice = { id, event_type: 'task.create', title: '新任务', summary: '请核对', source_type: 'task', source_id: task, object_title: '分镜', created_at: '2026-10-28T00:00:00Z',
+  object_version: 1, current_object_version: 1, is_current: true, source_status: 'current', can_open_source: true, requires_confirmation: true, read_at: null, confirmed_at: null }
 const ok = (data: unknown) => new Response(JSON.stringify({ data }), { status: 200 })
+
+test('withdrawal notices parse as historical information without acknowledgement', async () => {
+  const withdrawn = { ...notice, event_type: 'plan.withdrawn', source_type: 'plan', source_status: 'withdrawn', is_current: false, current_object_version: null, can_open_source: false, requires_confirmation: false }
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(ok(withdrawn)))
+  expect(await createNotificationClient(createHttpClient()).get(crew, id)).toEqual(withdrawn)
+})
 
 test('notice parser drops receiver data and rejects inconsistent confirmation records', async () => {
   const fetcher = vi.fn().mockResolvedValueOnce(ok({ ...notice, receiver_email: 'private@example.com' }))
@@ -40,4 +46,10 @@ test('read mutation never retries automatically on a lost response', async () =>
   vi.stubGlobal('fetch', fetcher)
   await expect(createNotificationClient(createHttpClient()).read(crew, id)).rejects.toMatchObject({ code: 'NETWORK_UNCONFIRMED' })
   expect(fetcher).toHaveBeenCalledTimes(2)
+})
+
+test('publication status can invalidate a notice without changing its version number', async () => {
+  const item = { ...notice, source_type: 'call_sheet', event_type: 'call_sheet.published', source_status: 'withdrawn', is_current: false }
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(ok(item)))
+  expect(await createNotificationClient(createHttpClient()).get(crew, id)).toEqual(item)
 })

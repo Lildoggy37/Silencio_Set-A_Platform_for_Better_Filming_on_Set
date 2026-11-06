@@ -15,10 +15,10 @@ test('navigates four workspaces and reports real connection failures', async () 
   expect(await screen.findByText('无法连接')).toBeTruthy()
   for (const tab of ['排期', '资源', '成员', '总览']) {
     fireEvent.click(screen.getByRole('button', { name: tab }))
-    expect(screen.getByRole('heading', { name: `${tab}模块尚未接入` })).toBeTruthy()
+    expect(screen.getByRole('heading', { name: '剧组工作区布局预览' })).toBeTruthy()
   }
   expect(screen.getAllByRole('button', { pressed: true })).toHaveLength(1)
   fireEvent.click(screen.getByRole('button', { name: '项目资料' }))
-  expect(await screen.findByText('这里将提供剧本、场戏与文字分镜入口。当前未接入资料接口。')).toBeTruthy()
+  expect(await screen.findByText('请先选择剧组，再查看项目资料。')).toBeTruthy()
   client.clear()
 })

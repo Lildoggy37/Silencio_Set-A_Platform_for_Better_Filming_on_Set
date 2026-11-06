@@ -1,15 +1,37 @@
-# 本地开发：基础框架
+# 本地开发
 
-范围：前端工作台与账号、健康检查、连接池、迁移、验证码/邀请邮件、剧组组织管理、筹备任务、任务通知、本人档期，以及资源登记／预约／审批授权和离组责任检查。不是业务成品或生产部署方案，不调用Qwen。迁移头为`0009_resources`，此前档期迁移需`btree_gist`；认证/邮件默认关闭。真实依赖联调待完成，最新业务边界见[资源与预约](resources-and-reservations.md)。
+核心筹备业务的前后端已接入，当前迁移头为 `0025_workflow_policies`，已在真实 PostgreSQL 执行。数据库、缓存、消息队列、本地邮件及核心筹备 HTTP 链路已通过联调，浏览器已覆盖登录、岗位、排期与通告发布和 PDF 下载。边界见[数据库与缓存](postgres-integration.md)、[浏览器](browser-integration.md)和[消息与邮件](mail-integration.md)。认证与邮件需要显式配置启用，Diane 首批只读查询代码已接入但默认关闭，启用配置及验证边界见[Diane说明](diane-read-only.md)。
 
 ## 1. 环境与秘密
 
-- 推荐Node 24与Python 3.12；Docker Desktop需由用户启动并使用Linux容器。
+- 当前使用 Node 24、Windows Python 3.12 和 Ubuntu 22.04 WSL。邮件 Worker 在 Linux 运行。
 - 真实根目录`.env`保持Git忽略，**不要用示例覆盖已有文件**。Qwen配置仍未消费；启用本地邮件需另配认证及加密密钥，不使用Qwen密钥代替。
 - 容器使用`deploy/.env.example`中的公开本地开发密码，显式指定`--env-file`，不挂载或传入根目录`.env`。这些密码绝不能用于公网。
 - 示例连接字符串使用显式端口。切换端口或密码时同步宿主机配置与Compose映射；示例支持URL安全密码字符，复杂凭据需正确URL编码和调整模板。
 
-## 2. 推荐方式：容器运行后端，宿主机运行前端
+## 2. 当前本机启动入口
+
+在 `backend` 目录执行下列命令。各进程使用同一份根目录 `.env`，当前终端的环境变量优先。先配置实际数据库、Redis 和 RabbitMQ 连接，再执行迁移。已有配置应手动合并，保留原密钥。
+
+| 命令 | 用途 |
+|---|---|
+| `.\.venv\Scripts\python.exe scripts/dev.py migrate` | 将已配置数据库迁移至最新版本 |
+| `.\.venv\Scripts\python.exe scripts/dev.py api` | 启动本机 API，监听 8000 |
+| `.\.venv\Scripts\python.exe scripts/dev.py notifications` | 持续生成任务、排期与通告的站内通知 |
+| `.\.venv\Scripts\python.exe scripts/dev.py dispatcher` | 将已受理的邮件任务投递到 RabbitMQ |
+| `.\.venv\Scripts\python.exe scripts/dev.py worker` | 启动 Linux 邮件 Worker |
+
+API 与通知消费者分别占用一个终端。启用验证码／邀请邮件时，再分别运行 dispatcher 和 worker，并配置 SMTP、`AUTH_SECRET` 与独立的 `MAIL_PAYLOAD_KEY`。消费者处理已发生的业务事件。来源变更检查继续通过页面显式触发。
+
+Windows 的 worker 命令委托现有 `Ubuntu-22.04` WSL 和 `runtime/local-services/worker-venv/bin/python`，这是此前准备好的本机运行环境。其他发行版用 `--distro 名称` 指定。原生 Linux 直接使用调用脚本的 Python 环境。两个平台均以单并发 prefork 运行，消费 `notifications` 队列。显式设置的配置环境变量按名称经 WSLENV 传递，避免 API 和 Worker 使用不同设置。
+
+独立 PostgreSQL、Redis、RabbitMQ 的启停见[本机服务记录](mail-integration.md)。其中 `*_smoke.py` 创建隔离测试库，`browser_preview.py` 使用测试账号，日常业务启动使用本节命令及自己的数据库配置。
+
+前端在 `frontend` 目录执行 `npm.cmd run dev`。访问 `http://127.0.0.1:5173`，Vite 将 `/api` 请求转发至 API。每个进程在自己的终端按 Ctrl+C 停止，之后按需停止独立依赖服务。
+
+真实 SMTP 的配置项见[邮箱接入说明](smtp-setup.md)。
+
+## 3. 既有 Compose 启动方式
 
 在仓库根目录，先验证配置，再启动：
 
@@ -29,7 +51,7 @@ npm.cmd run dev
 
 访问`http://127.0.0.1:5173`。前端同源请求`/api`，Vite代理到`http://127.0.0.1:8000`。`/docs`可查看当前接口。端口占用时先检查本机已有进程，不要直接杀掉不明进程。
 
-## 3. 后端本机调试（替代容器API，不要重复占用8000）
+## 4. 后端环境与连接配置
 
 先只启动三个依赖服务：
 
@@ -59,9 +81,9 @@ $env:CELERY_BROKER_URL = 'amqp://silencio:dev_mq_only@127.0.0.1:5672/silencio'
 
 需要热更新时追加`--reload`。所有运行配置仅供开发；不要把开发服务器暴露公网。默认关闭访问日志以免原始查询参数进入日志；应用错误日志只记录请求标识与异常类型。后续补充受控结构化日志，不记录密码、验证码和私人原文。
 
-Windows原生不作为Celery正式运行环境，Worker使用Compose中的Linux容器。当前已实现验证邮件任务、Outbox和有限重试；需开启mail profile及显式配置认证/加密密钥。其他异步业务尚未实现，详见[邮件链路说明](mail-flow.md)。
+Windows 邮件 Worker 通过上文入口使用现有 WSL Linux 环境。Compose 方式则使用 Linux 容器。验证／邀请邮件任务、Outbox 与有限重试已实现，详见[邮件链路说明](mail-flow.md)。
 
-## 4. 检查与预期结果
+## 5. 检查与预期结果
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:8000/api/v1/health/live
@@ -74,7 +96,7 @@ Invoke-RestMethod http://127.0.0.1:8000/api/v1/health/ready
 - 就绪结果最多缓存5秒。未验证迁移版本、Worker消费、文件读写、模型与邮件。
 - Docker引擎未运行：容器启动失败是环境问题，不要把它说成联调通过；无依赖时仍可跑单元测试与前端构建。
 
-## 5. 自动验证与依赖更新
+## 6. 验证与依赖更新
 
 在`backend`目录：
 
@@ -83,7 +105,7 @@ Invoke-RestMethod http://127.0.0.1:8000/api/v1/health/ready
 .\.venv\Scripts\python.exe -m pip check
 ```
 
-测试隔离真实`.env`，使用数据库替身、fakeredis/Lua和回环地址临时SMTP接收器，不调用模型或外部邮箱。模拟测试不等同真实PostgreSQL/Redis/RabbitMQ联调、性能或完整安全测试。
+日常修改只运行受影响模块的测试，整套测试按交付需要执行。普通单元测试隔离真实 `.env`，使用数据库替身、fakeredis/Lua 和回环 SMTP。真实服务的检查独立按需执行，见前述联调记录。
 
 在`frontend`目录：
 
@@ -106,7 +128,7 @@ $env:PYTHONIOENCODING = 'utf-8'
 
 锁文件当前在Windows/Python 3.12生成；Docker/Linux构建和依赖兼容仍须实际验证。镜像使用主版本标签，尚未做摘要锁定与完整供应链审核。
 
-## 6. 停止与数据保留
+## 7. 停止与数据保留
 
 开发终端按`Ctrl+C`结束前端或API。从仓库根目录停止容器：
 
@@ -116,6 +138,18 @@ docker compose --env-file deploy/.env.example -f deploy/compose.yaml down
 
 命名卷会保留。**不执行`down -v`**，该选项会删除本地数据库、队列及文件卷。当前没有自动备份/恢复实现。
 
-## 7. 下一批代码
+## 8. 当前功能与下一阶段
 
-资源登记、预约与审批授权已接入，见[资源与预约](resources-and-reservations.md)。下一步推进实物借还和耗材库存，再连接场地图片、创作资料和拍摄安排；每批补对应依赖与交接保护。真实依赖和浏览器联调仍待补。暂不处理Docker；Diane保留到基础业务完成后。
+当前已补充无需 Docker 的 PostgreSQL 17.11、WSL Redis 7.4.12 和 RabbitMQ 4.4.0 独立测试环境，迁移到 `0024_impact_history` 及完整 HTTP 筹备发布链已通过；基础登录、剧组岗位及响应式布局的真实 Edge 检查也已通过。Linux Celery prefork、本地 SMTP、验证码注册登录和邀请确认入组已跑通。操作方式及边界见[数据库与缓存](postgres-integration.md)、[浏览器](browser-integration.md)及[消息与邮件](mail-integration.md)；下文各模块的“真实联调待补”应结合这些记录理解，邀请的完整浏览器操作、外部邮箱、真实故障和其他完整页面流转仍待验证。
+
+资源登记、预约、借还、库存、剧本文件与版本、场戏／文字分镜、人物／资源需求、演员绑定、排期草稿与冲突检查、正式排期发布与撤回、通告审核发布与 PDF、通知回执管理、私有勘景资料及来源复核均已接入前后端。后续推进实际邮箱配置和 Diane。性能指标与公开部署在相应交付阶段评估。
+
+人物与演员绑定及排期／通告复核联动已接入，规则、权限及边界见[选角实现说明](character-casting.md)。
+
+正式排期撤回、关联通告失效及发布通知回执管理已接入，见[撤回与回执说明](plan-withdrawal-and-receipts.md)。
+
+剧本来源变更清单、场戏／分镜适用性复核及排期检查衔接已接入，范围和当前限制见[来源复核说明](source-applicability.md)。
+
+总览中的统一变更待处理清单及资料／排期／通告定位已接入，不新增数据库迁移，见[变更工作台说明](change-workbench.md)。
+
+显式变更检查、持久问题及观察历史已接入，新增迁移`0024_impact_history`；普通刷新保持只读。规则和异步边界见[问题历史说明](impact-history.md)。

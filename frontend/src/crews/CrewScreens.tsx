@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { Button, Input, Modal } from 'antd'
+import type { ReactNode } from 'react'
+import { Button, Dropdown, Input, Modal } from 'antd'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '../auth/AuthProvider'
 import { ErrorNotice } from '../auth/AccountScreens'
@@ -12,7 +13,27 @@ import { InvitationManager } from './InvitationScreens'
 import { MemberExitDialog } from './MemberExitDialog'
 export { useBusinessSession } from './useBusinessSession'
 
-export function CrewPicker({ open, userId, onClose, onSelect }: { open: boolean; userId: string; onClose: () => void; onSelect: (id: string) => void }) {
+export function CrewSwitchMenu({ userId, currentCrewId, onSelect, onBrowse, onLeave, children }: {
+  userId: string; currentCrewId?: string; onSelect: (id: string) => void; onBrowse: () => void; onLeave?: () => void; children: ReactNode
+}) {
+  const { crews } = useAuth()
+  const [open, setOpen] = useState(false)
+  const [page, setPage] = useState(1)
+  const list = useQuery({ queryKey: ['crews', userId, 'list', page], queryFn: ({ signal }) => crews.list(page, signal), enabled: open, retry: false })
+  useBusinessSession(list.error)
+  return <Dropdown open={open} onOpenChange={setOpen} trigger={['hover', 'click']} mouseLeaveDelay={0.4} placement="bottomLeft" popupRender={() => <div className="crew-switch-menu" role="menu" aria-label="切换剧组">
+    <p className="crew-switch-heading">我的剧组</p>
+    <ErrorNotice error={list.error} />
+    {list.isError && <Button onClick={() => { void list.refetch() }}>重新读取剧组</Button>}
+    {list.isPending && <p role="status">正在读取剧组…</p>}
+    {list.data && <><div className="crew-switch-items">{list.data.items.map((crew, index) => <button role="menuitem" type="button" key={crew.id} className={crew.id === currentCrewId ? 'current' : ''} onClick={() => { setOpen(false); onSelect(crew.id) }}>
+      <span className="crew-switch-index" aria-hidden="true">{String((page - 1) * 20 + index + 1).padStart(2, '0')}</span><span><strong>{crew.name}</strong><small>《{crew.project_name}》</small></span>{crew.id === currentCrewId && <small>当前</small>}
+    </button>)}</div>{list.data.total === 0 && <p>尚未加入剧组</p>}{list.data.total > 20 && <div className="list-pagination"><Button disabled={page === 1 || list.isFetching} onClick={() => setPage(page - 1)}>上一页</Button><span>第 {page} 页</span><Button disabled={page * 20 >= list.data.total || list.isFetching} onClick={() => setPage(page + 1)}>下一页</Button></div>}</>}
+    <div className="crew-switch-footer"><button role="menuitem" type="button" onClick={() => { setOpen(false); onBrowse() }}>选择或创建剧组</button>{onLeave && <button role="menuitem" type="button" className="crew-leave" onClick={() => { setOpen(false); onLeave() }}>退出当前剧组</button>}</div>
+  </div>}>{children}</Dropdown>
+}
+
+export function CrewPicker({ open, userId, currentCrewId, onClose, onSelect }: { open: boolean; userId: string; currentCrewId?: string; onClose: () => void; onSelect: (id: string) => void }) {
   const { crews } = useAuth()
   const cache = useQueryClient()
   const [number, setNumber] = useState(1)
@@ -29,7 +50,7 @@ export function CrewPicker({ open, userId, onClose, onSelect }: { open: boolean;
   const validText = (value: string, max: number) => Array.from(trimName(value)).length >= 1 && Array.from(trimName(value)).length <= max && !/[\p{Cc}\p{Cs}]/u.test(value)
 
   return <Modal title={creating ? '创建剧组' : '选择剧组'} open={open} onCancel={onClose} footer={null}
-    closable={!pending} keyboard={!pending} mask={{ closable: !pending }} width={600}>
+    closable={!pending} keyboard={!pending} mask={{ closable: !pending }} width={800} className="crew-picker-modal">
     {creating ? <form className="account-form crew-create" noValidate onSubmit={event => {
       event.preventDefault()
       if (lock.current || uncertain) return
@@ -57,11 +78,12 @@ export function CrewPicker({ open, userId, onClose, onSelect }: { open: boolean;
       <Button type="primary" htmlType="submit" loading={pending} aria-label="确认创建剧组" aria-busy={pending} disabled={uncertain}>确认创建剧组</Button>
       <Button disabled={pending} onClick={() => { setCreating(false); setError(null); void list.refetch() }}>{uncertain ? '查看剧组列表' : '返回剧组列表'}</Button>
     </form> : <div className="crew-picker">
+      <div className="crew-index-heading"><span>CREW INDEX</span><span>{list.data ? `${list.data.total} 个剧组` : '你的创作项目'}</span></div>
       <ErrorNotice error={list.error} />
       {list.isPending && !list.isError && <p role="status">正在读取你的剧组…</p>}
       {!list.isError && list.data && <>
         {list.data.items.length === 0 ? <p>你还没有加入剧组。可以创建自己的剧组，或打开邀请邮件中的链接。</p>
-          : <ul className="crew-list">{list.data.items.map(crew => <li key={crew.id}><button type="button" aria-label={`${crew.name} · ${crew.project_name}`} onClick={() => { onSelect(crew.id); onClose() }}><strong>{crew.name}</strong><span>{crew.project_name}</span></button></li>)}</ul>}
+          : <ul className="crew-list crew-selection-list">{list.data.items.map((crew, index) => <li key={crew.id}><button type="button" aria-label={`${crew.name} · ${crew.project_name}`} aria-current={crew.id === currentCrewId ? 'true' : undefined} onClick={() => { onSelect(crew.id); onClose() }}><span className="crew-index" aria-hidden="true">{String((number - 1) * 20 + index + 1).padStart(2, '0')}</span><div className="crew-selection-copy"><strong>{crew.name}</strong><span>《{crew.project_name}》</span>{crew.description && <p>{crew.description}</p>}</div><span className="crew-selection-action"><small>{crew.id === currentCrewId ? '当前剧组' : '进入剧组'}</small><span aria-hidden="true">↗</span></span></button></li>)}</ul>}
         <div className="list-pagination"><Button disabled={number === 1 || list.isFetching} onClick={() => setNumber(number - 1)}>上一页</Button><span>第 {number} 页 · 共 {list.data.total} 个剧组</span><Button disabled={number * 20 >= list.data.total || list.isFetching} onClick={() => setNumber(number + 1)}>下一页</Button></div>
       </>}
       <div className="crew-picker-actions"><Button aria-label="刷新剧组列表" loading={list.isFetching} onClick={() => { void list.refetch() }}>刷新列表</Button><Button type="primary" aria-label="创建新剧组" onClick={() => { setUncertain(false); setError(null); setCreating(true) }}>创建新剧组</Button></div>
@@ -72,7 +94,7 @@ export function CrewPicker({ open, userId, onClose, onSelect }: { open: boolean;
 export function MemberDirectory({ userId, crewId, selfMemberId, canAuthorize = false, canInvite = false, canRemove = false, onAccessChanged, onOpenTask, onOpenResource }: {
   userId: string; crewId: string; selfMemberId: string; canAuthorize?: boolean; canInvite?: boolean; canRemove?: boolean; onAccessChanged: () => Promise<void>
   onOpenTask?: (id: string) => void
-  onOpenResource?: (id: string) => void
+  onOpenResource?: (id: string, resourceType?: string) => void
 }) {
   const { crews } = useAuth()
   const [number, setNumber] = useState(1)
@@ -84,14 +106,14 @@ export function MemberDirectory({ userId, crewId, selfMemberId, canAuthorize = f
   useEffect(() => { if (!canAuthorize) setEditing(null) }, [canAuthorize])
   useEffect(() => { if (!canRemove) setRemoving(null) }, [canRemove])
   return <div className="member-directory">
-    <div className="section-heading"><h2>在组成员</h2><div className="member-actions">{canInvite && <InvitationManager crewId={crewId} userId={userId} />}<Button loading={members.isFetching} onClick={() => { void members.refetch(); void onAccessChanged() }}>刷新成员</Button></div></div>
+    <div className="section-heading"><h2>在组成员</h2><div className="member-actions"><Button loading={members.isFetching} onClick={() => { void members.refetch(); void onAccessChanged() }}>刷新成员</Button>{canInvite && <InvitationManager crewId={crewId} userId={userId} />}</div></div>
     <ErrorNotice error={members.error} />
     {members.isPending && <p role="status">正在读取成员…</p>}
     {!members.isError && members.data && <>
-      <div className="directory-scroll"><table><caption className="caption">仅展示当前剧组的在组成员及岗位</caption><thead><tr><th scope="col">成员</th><th scope="col">岗位</th><th scope="col">状态</th>{(canAuthorize || canRemove) && <th scope="col">操作</th>}</tr></thead><tbody>{members.data.items.map(member => <tr key={member.id}><td>{member.display_name}</td><td>{member.role_codes.map(code => roleNames[code]).join(' / ') || '尚未分配岗位'}</td><td>在组</td>{(canAuthorize || canRemove) && <td>{canAuthorize && <Button aria-label={`管理${member.display_name}的岗位`} onClick={() => setEditing(member)}>管理岗位</Button>}{canRemove && member.id !== selfMemberId && <Button aria-label={`移除${member.display_name}`} onClick={() => setRemoving(member)}>移除成员</Button>}</td>}</tr>)}</tbody></table></div>
+      <div className="directory-scroll"><table><caption className="sr-only">在组成员及岗位</caption><thead><tr><th scope="col">成员</th><th scope="col">岗位</th><th scope="col">状态</th>{(canAuthorize || canRemove) && <th scope="col">操作</th>}</tr></thead><tbody>{members.data.items.map(member => <tr key={member.id}><td><strong>{member.display_name}</strong></td><td>{member.role_codes.map(code => roleNames[code]).join(' / ') || '尚未分配岗位'}</td><td>在组</td>{(canAuthorize || canRemove) && <td className="member-row-actions">{canAuthorize && <Button type="text" aria-label={`管理${member.display_name}的岗位`} onClick={() => setEditing(member)}>管理岗位</Button>}{canRemove && member.id !== selfMemberId && <Button type="text" danger aria-label={`移除${member.display_name}`} onClick={() => setRemoving(member)}>移除成员</Button>}</td>}</tr>)}</tbody></table></div>
       <div className="list-pagination"><Button disabled={number === 1 || members.isFetching} onClick={() => setNumber(number - 1)}>上一页</Button><span>第 {number} 页 · 共 {members.data.total} 人</span><Button disabled={number * 20 >= members.data.total || members.isFetching} onClick={() => setNumber(number + 1)}>下一页</Button></div>
     </>}
-    <p className="module-note">{canAuthorize ? '岗位变更先核对差异，再明确提交。' : '岗位由有管理权限的成员分配。'}受邀者接受后加入，个人档期由本人维护。</p>
+    <details className="calendar-rules"><summary>岗位与邀请说明</summary><p>{canAuthorize ? '岗位变更先核对差异，再明确提交。' : '岗位由有管理权限的成员分配。'}受邀者接受后加入，个人档期由本人维护。</p></details>
     {removing && canRemove && <MemberExitDialog key={removing.id} crewId={crewId} member={removing} removing onClose={() => setRemoving(null)} onOpenTask={onOpenTask} onOpenResource={onOpenResource}
       onReload={async () => {
         const fresh = await members.refetch()

@@ -1,5 +1,6 @@
 from datetime import datetime
 from uuid import UUID
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -18,11 +19,14 @@ class NotificationView(BaseModel):
     title: str
     summary: str
     created_at: datetime
-    task_id: UUID
-    task_title: str
+    source_type: Literal['task', 'plan', 'call_sheet']
+    source_id: UUID
+    object_title: str
     object_version: int
-    current_object_version: int
+    current_object_version: int | None
     is_current: bool
+    source_status: Literal['current', 'updated', 'review_required', 'superseded', 'withdrawn']
+    can_open_source: bool
     requires_confirmation: bool
     read_at: datetime | None
     confirmed_at: datetime | None

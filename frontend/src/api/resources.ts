@@ -1,24 +1,28 @@
 import { AccountError } from './accounts'
+import { createCustodyClient } from './custody'
+import { createStockClient } from './stock'
+import { createLocationClient } from './locations'
 import type { HttpClient } from './http'
 import type { Page } from './crews'
 import type { CalendarRange } from './availability'
 
 export const resourceTypes = { equipment: '设备', prop: '道具', location: '场地' }
-export const reservationStatuses = { pending: '待审批', confirmed: '已批准', rejected: '已拒绝', cancelled: '已取消' }
+export const reservationStatuses = { pending: '待审批', confirmed: '已确认', rejected: '已拒绝', cancelled: '已取消' }
 export type Resource = {
   id: string; crew_id: string; name: string; resource_type: keyof typeof resourceTypes; unit: string; total_quantity: number
   status: 'available' | 'disabled'; description: string | null; manager_member_id: string; manager_display_name: string; manager_lock_version: number
-  review_ready: boolean; lock_version: number; created_at: string; updated_at: string; allowed_actions: ('edit' | 'authorize' | 'apply')[]
+  approval_policy?: 'manual' | 'automatic'; review_ready: boolean; lock_version: number; created_at: string; updated_at: string; allowed_actions: ('edit' | 'authorize' | 'apply')[]
+  custody_actions?: ('checkout' | 'return')[]
 }
 export type Reservation = {
   id: string; crew_id: string; resource_id: string; applicant_member_id: string; starts_at: string; ends_at: string; quantity: number
-  status: keyof typeof reservationStatuses; reviewed_by: string | null; reviewed_at: string | null; decision_note: string | null
+  confirmation_mode?: 'manual' | 'automatic'; status: keyof typeof reservationStatuses; reviewed_by: string | null; reviewed_at: string | null; decision_note: string | null
   cancelled_by: string | null; cancelled_at: string | null; cancel_reason: string | null; lock_version: number; created_at: string; updated_at: string
-  allowed_actions: ('accept' | 'reject' | 'cancel')[]; dependency_check_status: 'not_implemented'
+  allowed_actions: ('accept' | 'reject' | 'cancel')[]; dependency_check_status: 'not_implemented' | 'current_published_plans'
 }
 export type ResourceCapacity = CalendarRange & { resource_id: string; resource_lock_version: number; total_quantity: number;
   peak_confirmed_quantity: number; minimum_remaining_quantity: number; confirmed_reservation_count: number; physical_inventory_status: 'not_implemented' }
-export type ResourceResponsibility = { kind: 'resource' | 'reservation'; id: string; resource_id: string; title: string;
+export type ResourceResponsibility = { resource_type?: string | null; kind: 'resource' | 'reservation'; id: string; resource_id: string; title: string;
   status: 'available' | 'disabled' | 'pending' | 'confirmed'; lock_version: number; ends_at: string | null }
 export type ResourceCommand = { action: 'create' | 'edit' | 'authorize' | 'apply' | 'decide' | 'cancel'; resourceId?: string; reservationId?: string; body: Record<string, unknown>; key?: string }
 const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
@@ -38,18 +42,23 @@ function parseResource(v: unknown): Resource {
     || !integer(v.manager_lock_version) || v.manager_lock_version > 2_147_483_647 || !text(v.manager_display_name, 30)
     || typeof v.review_ready !== 'boolean' || !date(v.created_at) || !date(v.updated_at) || !(v.description === null || text(v.description, 2000))
     || !actions(v.allowed_actions, ['edit', 'authorize', 'apply'])) throw invalid()
-  return pick<Resource>(v, ['id', 'crew_id', 'name', 'resource_type', 'unit', 'total_quantity', 'status', 'description', 'manager_member_id', 'manager_display_name', 'manager_lock_version', 'review_ready', 'lock_version', 'created_at', 'updated_at', 'allowed_actions'])
+  const result = pick<Resource>(v, ['id', 'crew_id', 'name', 'resource_type', 'unit', 'total_quantity', 'status', 'description', 'manager_member_id', 'manager_display_name', 'manager_lock_version', 'review_ready', 'lock_version', 'created_at', 'updated_at', 'allowed_actions'])
+  if (v.approval_policy !== undefined && !['manual', 'automatic'].includes(String(v.approval_policy))) throw invalid()
+  result.approval_policy = v.approval_policy === 'automatic' ? 'automatic' : 'manual'
+  if (v.custody_actions !== undefined) result.custody_actions = v.custody_actions as Resource['custody_actions']
+  return result
 }
 function parseReservation(v: unknown): Reservation {
   if (!record(v) || !id(v.id) || !id(v.crew_id) || !id(v.resource_id) || !id(v.applicant_member_id) || !date(v.starts_at) || !date(v.ends_at)
     || Date.parse(v.ends_at) <= Date.parse(v.starts_at) || !integer(v.quantity) || v.quantity < 1 || v.quantity > 1_000_000 || !version(v.lock_version)
     || !Object.hasOwn(reservationStatuses, String(v.status)) || !date(v.created_at) || !date(v.updated_at)
-    || !(v.decision_note === null || text(v.decision_note, 500)) || v.dependency_check_status !== 'not_implemented'
+    || !(v.decision_note === null || text(v.decision_note, 500)) || !['not_implemented', 'current_published_plans'].includes(String(v.dependency_check_status))
     || !actions(v.allowed_actions, ['accept', 'reject', 'cancel'])) throw invalid()
   if (!(v.reviewed_by === null && v.reviewed_at === null || id(v.reviewed_by) && date(v.reviewed_at))) throw invalid()
-  if (['confirmed', 'rejected'].includes(String(v.status)) && v.reviewed_by === null || v.status === 'rejected' && !text(v.decision_note, 500)) throw invalid()
+  if (['confirmed', 'rejected'].includes(String(v.status)) && v.reviewed_by === null && !(v.status === 'confirmed' && v.confirmation_mode === 'automatic') || v.status === 'rejected' && !text(v.decision_note, 500)) throw invalid()
   if (v.status === 'cancelled' ? !id(v.cancelled_by) || !date(v.cancelled_at) || !text(v.cancel_reason, 500) : v.cancelled_by !== null || v.cancelled_at !== null || v.cancel_reason !== null) throw invalid()
-  return pick<Reservation>(v, ['id', 'crew_id', 'resource_id', 'applicant_member_id', 'starts_at', 'ends_at', 'quantity', 'status', 'reviewed_by', 'reviewed_at', 'decision_note', 'cancelled_by', 'cancelled_at', 'cancel_reason', 'lock_version', 'created_at', 'updated_at', 'allowed_actions', 'dependency_check_status'])
+  if (v.confirmation_mode !== undefined && !['manual', 'automatic'].includes(String(v.confirmation_mode))) throw invalid()
+  return { confirmation_mode: v.confirmation_mode === 'automatic' ? 'automatic' : 'manual', ...pick<Reservation>(v, ['id', 'crew_id', 'resource_id', 'applicant_member_id', 'starts_at', 'ends_at', 'quantity', 'status', 'reviewed_by', 'reviewed_at', 'decision_note', 'cancelled_by', 'cancelled_at', 'cancel_reason', 'lock_version', 'created_at', 'updated_at', 'allowed_actions', 'dependency_check_status']) }
 }
 function parsePage<T>(v: unknown, page: number, parse: (v: unknown) => T): Page<T> {
   if (!record(v) || !Array.isArray(v.items) || v.items.length > 20 || v.page !== page || v.page_size !== 20 || !integer(v.total) || v.total < v.items.length) throw invalid()
@@ -60,6 +69,9 @@ function pageQuery(page: number) { if (!Number.isInteger(page) || page < 1 || pa
 export function createResourceClient(http: HttpClient) {
   const base = (crewId: string) => `/crews/${checkedId(crewId)}`
   return {
+    ...createCustodyClient(http),
+    ...createStockClient(http),
+    ...createLocationClient(http),
     async list(crewId: string, page = 1, signal?: AbortSignal) {
       const result = parsePage(await http.request(`${base(crewId)}/resources?${pageQuery(page)}`, { signal }), page, parseResource)
       if (result.items.some(row => row.crew_id !== crewId) || new Set(result.items.map(row => row.id)).size !== result.items.length) throw invalid()
@@ -97,7 +109,7 @@ export function createResourceClient(http: HttpClient) {
       const result = parsePage(raw, page, (v): ResourceResponsibility => {
         if (!record(v) || !id(v.id) || !id(v.resource_id) || !['resource', 'reservation'].includes(String(v.kind)) || !text(v.title, 100) || !version(v.lock_version)
           || (v.kind === 'resource' ? !['available', 'disabled'].includes(String(v.status)) || v.ends_at !== null || v.id !== v.resource_id : !['pending', 'confirmed'].includes(String(v.status)) || !date(v.ends_at))) throw invalid()
-        return pick<ResourceResponsibility>(v, ['kind', 'id', 'resource_id', 'title', 'status', 'lock_version', 'ends_at'])
+        return pick<ResourceResponsibility>(v, ['kind', 'id', 'resource_id', 'title', 'status', 'lock_version', 'ends_at', 'resource_type'])
       })
       return { ...result, member_id: memberId, blocking_total: raw.blocking_total, restricted_total: raw.restricted_total }
     },
@@ -112,7 +124,8 @@ export function createResourceClient(http: HttpClient) {
       if (result.crew_id !== crewId || command.reservationId && result.id !== command.reservationId || !booking && command.resourceId && result.id !== command.resourceId) throw invalid()
       if (['create', 'apply'].includes(command.action) ? result.lock_version !== 1 : result.lock_version !== Number(command.body.expected_lock_version) + 1) throw invalid()
       if (command.action === 'apply' && (result as Reservation).resource_id !== command.body.resource_id) throw invalid()
-      const expected = command.action === 'apply' ? 'pending' : command.action === 'decide' ? command.body.decision === 'accept' ? 'confirmed' : 'rejected' : command.action === 'cancel' ? 'cancelled' : undefined
+      if (command.action === 'apply' && !['pending', 'confirmed'].includes(result.status)) throw invalid()
+      const expected = command.action === 'decide' ? command.body.decision === 'accept' ? 'confirmed' : 'rejected' : command.action === 'cancel' ? 'cancelled' : undefined
       if (expected && result.status !== expected) throw invalid()
       return result
     },

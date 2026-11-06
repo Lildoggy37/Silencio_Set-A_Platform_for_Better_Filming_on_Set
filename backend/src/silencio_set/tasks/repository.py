@@ -76,7 +76,7 @@ def allowed_actions(task, actor):
             actions.append("edit")
     if actor.member_id == task.owner_member_id and "task.work" in actor.permissions:
         if task.status == "pending": actions.append("start")
-        if task.status == "in_progress": actions.append("submit")
+        if task.status == "in_progress" or task.status == "pending" and not task.requires_review: actions.append("submit")
     if task.status == "pending_review" and actor.member_id == task.reviewer_member_id and "task.review" in actor.permissions:
         actions.append("review")
     return sorted(actions)
@@ -101,8 +101,13 @@ def check_action(task, actor, action, version):
 
 
 def request_digest(action, task_id, body):
+    payload = body.model_dump(mode="json")
+    # Keep existing receipts replayable when callers omit the new policy fields.
+    for field in ("requires_review", "approval_policy"):
+        if field not in body.model_fields_set:
+            payload.pop(field, None)
     canonical = json.dumps({"action": action, "target": str(task_id) if task_id else None,
-        "body": body.model_dump(mode="json")}, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        "body": payload}, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return sha256(canonical.encode()).hexdigest()
 
 
@@ -122,14 +127,14 @@ def task_view(task, collaborators, actor):
         collaborator_member_ids=collaborators, allowed_actions=allowed_actions(task, actor))
 
 
-async def validate_assignment(session, crew_id, owner, reviewer, collaborators):
+async def validate_assignment(session, crew_id, owner, reviewer, collaborators, requires_review=True):
     ids = {owner, reviewer, *collaborators}
     members = (await session.scalars(select(CrewMember).join(User, User.id == CrewMember.user_id).where(
         CrewMember.crew_id == crew_id, CrewMember.id.in_(ids), CrewMember.status == "active", User.status == "active"))).all()
     if {member.id for member in members} != ids:
         raise AuthError(409, "MEMBER_INACTIVE", "指派成员必须仍在当前剧组且账号有效")
     permissions = await permissions_for(session, members)
-    if "task.work" not in permissions[owner] or "task.review" not in permissions[reviewer] or any(
+    if "task.work" not in permissions[owner] or (requires_review and "task.review" not in permissions[reviewer]) or any(
         not ({"task.read", "task.manage"} & permissions[member_id]) for member_id in ids):
         raise AuthError(409, "MEMBER_NOT_ELIGIBLE", "指派成员缺少对应任务权限")
 
@@ -202,94 +207,103 @@ class TaskRepository:
                 current_submission=SubmissionView.model_validate(current) if current else None, submission_count=total)
 
     async def mutate(self, user_id, crew_id, action, body, request_id, *, task_id=None, idempotency_key=None):
+        async with self.sessions() as session, session.begin():
+            return await self.mutate_in_session(session, user_id, crew_id, action, body, request_id,
+                task_id=task_id, idempotency_key=idempotency_key)
+
+    async def mutate_in_session(self, session, user_id, crew_id, action, body, request_id, *, task_id=None, idempotency_key=None):
         if action in {"create", "submit", "review", "cancel"} and not idempotency_key:
             raise ValueError("This task operation requires an idempotency key")
-        async with self.sessions() as session, session.begin():
-            actor = await task_actor(session, user_id, crew_id, writing=True)
-            if action == "create": require_permission(actor, "task.manage")
-            task = None
-            if task_id is not None:
-                task = await session.scalar(visible_tasks(crew_id, actor).where(Task.id == task_id).with_for_update())
-                if task is None: raise not_found()
-            digest = request_digest(action, task_id, body)
-            key_digest = sha256(idempotency_key.encode()).hexdigest() if idempotency_key else None
-            if key_digest:
-                receipt = await session.scalar(select(TaskReceipt).where(TaskReceipt.crew_id == crew_id,
-                    TaskReceipt.user_id == user_id, TaskReceipt.key_digest == key_digest))
-                if receipt is not None:
-                    if receipt.request_digest != digest:
-                        raise AuthError(409, "IDEMPOTENCY_KEY_REUSED", "同一幂等键不能用于不同请求")
-                    # Recheck CURRENT visibility and operation permission even
-                    # when returning an earlier successful result.
-                    current = task or await session.scalar(visible_tasks(crew_id, actor).where(Task.id == receipt.task_id))
-                    if current is None: raise not_found()
-                    required = "task.work" if action == "submit" else "task.review" if action == "review" else "task.manage"
-                    require_permission(actor, required)
-                    if action == "submit" and current.owner_member_id != actor.member_id or action == "review" and current.reviewer_member_id != actor.member_id:
-                        raise AuthError(403, "FORBIDDEN", "当前已无此任务操作资格")
-                    snapshot = TaskView.model_validate(receipt.response_snapshot)
-                    return snapshot.model_copy(update={"allowed_actions": []})  # Historical result; GET before the next action.
-            now = await session.scalar(select(func.clock_timestamp()))
-            old_collaborators = (await collaborators_for(session, [task]))[task.id] if task else []
-            old_responsible = {task.owner_member_id, task.reviewer_member_id} if task else set()
-            before = {"status": task.status, "lock_version": task.lock_version,
-                "owner_member_id": str(task.owner_member_id), "reviewer_member_id": str(task.reviewer_member_id),
-                "collaborator_member_ids": [str(item) for item in old_collaborators]} if task else None
-            if action == "create":
-                if body.due_at <= now: raise AuthError(422, "VALIDATION_ERROR", "截止时间必须晚于当前时间")
-                await validate_assignment(session, crew_id, body.owner_member_id, body.reviewer_member_id, body.collaborator_member_ids)
-                task = Task(id=uuid4(), crew_id=crew_id, created_by_member_id=actor.member_id,
-                    status="pending", lock_version=1, created_at=now, updated_at=now,
-                    **body.model_dump(exclude={"collaborator_member_ids", "scene_id"}))
-                session.add(task)
-                await session.flush()
-                collaborators = body.collaborator_member_ids
-            else:
-                check_action(task, actor, action, body.expected_lock_version)
-                collaborators = old_collaborators
-                if action == "edit":
-                    changes = body.model_dump(exclude_unset=True, exclude={"expected_lock_version", "collaborator_member_ids"})
-                    if "due_at" in changes and changes["due_at"] <= now: raise AuthError(422, "VALIDATION_ERROR", "新的截止时间必须晚于当前时间")
-                    collaborators = body.collaborator_member_ids if "collaborator_member_ids" in body.model_fields_set else collaborators
-                    await validate_assignment(session, crew_id, changes.get("owner_member_id", task.owner_member_id), changes.get("reviewer_member_id", task.reviewer_member_id), collaborators)
-                    for field, value in changes.items(): setattr(task, field, value)
-                elif action == "start": task.status = "in_progress"
-                elif action == "submit":
-                    previous = await session.scalar(select(func.max(TaskSubmission.submission_no)).where(TaskSubmission.task_id == task.id, TaskSubmission.crew_id == crew_id))
-                    session.add(TaskSubmission(id=uuid4(), crew_id=crew_id, task_id=task.id, submission_no=(previous or 0) + 1,
-                        submitted_by=actor.member_id, completion_note=body.completion_note, review_status="pending", submitted_at=now))
-                    task.status = "pending_review"
-                elif action in {"review", "cancel"}:
-                    current = await session.scalar(select(TaskSubmission).where(TaskSubmission.crew_id == crew_id,
-                        TaskSubmission.task_id == task.id, TaskSubmission.review_status == "pending").with_for_update())
-                    if action == "review":
-                        if current is None or current.id != body.submission_id: raise AuthError(409, "INVALID_STATE", "请审核当前待确认提交")
-                        current.review_status = "accepted" if body.decision == "accept" else "rejected"
-                        current.review_note = body.review_note
-                        task.status = "completed" if body.decision == "accept" else "in_progress"
-                    else:
-                        task.status = "cancelled"; task.cancel_reason = body.reason
-                        if current:
-                            current.review_status = "cancelled"; current.review_note = None
-                    if current:
-                        current.reviewed_by = actor.member_id; current.reviewed_at = now
-                else: raise ValueError("Unsupported task operation")
-                task.lock_version += 1; task.updated_at = now
-            if action in {"create", "edit"}:
-                await session.execute(delete(TaskCollaborator).where(TaskCollaborator.crew_id == crew_id, TaskCollaborator.task_id == task.id))
-                for member_id in collaborators:
-                    session.add(TaskCollaborator(crew_id=crew_id, task_id=task.id, member_id=member_id))
-            result = task_view(task, collaborators, actor)
-            session.add(AuditLog(crew_id=crew_id, actor_type="user", actor_id=user_id, action=f"task.{action}",
-                target_type="task", target_id=task.id, result="success", request_id=request_id, before_summary=before,
-                after_summary={"status": task.status, "lock_version": task.lock_version,
-                    "owner_member_id": str(task.owner_member_id), "reviewer_member_id": str(task.reviewer_member_id),
-                    "collaborator_member_ids": [str(item) for item in collaborators]}))
-            recipients = sorted({task.owner_member_id, task.reviewer_member_id, task.created_by_member_id, *old_responsible, *collaborators, *old_collaborators})
-            session.add(TaskChangeEvent(crew_id=crew_id, task_id=task.id, task_version=task.lock_version,
-                kind=action, actor_member_id=actor.member_id, recipient_member_ids=[str(item) for item in recipients]))
-            if key_digest:
-                session.add(TaskReceipt(crew_id=crew_id, user_id=user_id, task_id=task.id, key_digest=key_digest,
-                    request_digest=digest, response_snapshot=result.model_dump(mode="json")))
+        actor = await task_actor(session, user_id, crew_id, writing=True)
+        if action == "create": require_permission(actor, "task.manage")
+        task = None
+        if task_id is not None:
+            task = await session.scalar(visible_tasks(crew_id, actor).where(Task.id == task_id).with_for_update())
+            if task is None: raise not_found()
+        digest = request_digest(action, task_id, body)
+        key_digest = sha256(idempotency_key.encode()).hexdigest() if idempotency_key else None
+        if key_digest:
+            receipt = await session.scalar(select(TaskReceipt).where(TaskReceipt.crew_id == crew_id,
+                TaskReceipt.user_id == user_id, TaskReceipt.key_digest == key_digest))
+            if receipt is not None:
+                if receipt.request_digest != digest:
+                    raise AuthError(409, "IDEMPOTENCY_KEY_REUSED", "同一幂等键不能用于不同请求")
+                # Recheck CURRENT visibility and operation permission even
+                # when returning an earlier successful result.
+                current = task or await session.scalar(visible_tasks(crew_id, actor).where(Task.id == receipt.task_id))
+                if current is None: raise not_found()
+                required = "task.work" if action == "submit" else "task.review" if action == "review" else "task.manage"
+                require_permission(actor, required)
+                if action == "submit" and current.owner_member_id != actor.member_id or action == "review" and current.reviewer_member_id != actor.member_id:
+                    raise AuthError(403, "FORBIDDEN", "当前已无此任务操作资格")
+                snapshot = TaskView.model_validate(receipt.response_snapshot)
+                return snapshot.model_copy(update={"allowed_actions": []})  # Historical result; GET before the next action.
+        now = await session.scalar(select(func.clock_timestamp()))
+        old_collaborators = (await collaborators_for(session, [task]))[task.id] if task else []
+        old_responsible = {task.owner_member_id, task.reviewer_member_id} if task else set()
+        before = {"status": task.status, "lock_version": task.lock_version,
+            "owner_member_id": str(task.owner_member_id), "reviewer_member_id": str(task.reviewer_member_id), "requires_review": task.requires_review,
+            "collaborator_member_ids": [str(item) for item in old_collaborators]} if task else None
+        if action == "create":
+            if body.due_at <= now: raise AuthError(422, "VALIDATION_ERROR", "截止时间必须晚于当前时间")
+            await validate_assignment(session, crew_id, body.owner_member_id, body.reviewer_member_id, body.collaborator_member_ids, body.requires_review)
+            task = Task(id=uuid4(), crew_id=crew_id, created_by_member_id=actor.member_id,
+                status="pending", lock_version=1, created_at=now, updated_at=now,
+                **body.model_dump(exclude={"collaborator_member_ids", "scene_id"}))
+            session.add(task)
             await session.flush()
+            collaborators = body.collaborator_member_ids
+        else:
+            check_action(task, actor, action, body.expected_lock_version)
+            collaborators = old_collaborators
+            if action == "edit":
+                changes = body.model_dump(exclude_unset=True, exclude={"expected_lock_version", "collaborator_member_ids"})
+                if "due_at" in changes and changes["due_at"] <= now: raise AuthError(422, "VALIDATION_ERROR", "新的截止时间必须晚于当前时间")
+                collaborators = body.collaborator_member_ids if "collaborator_member_ids" in body.model_fields_set else collaborators
+                requires_review = changes.get("requires_review", task.requires_review)
+                if not requires_review:
+                    changes["reviewer_member_id"] = changes.get("owner_member_id", task.owner_member_id)
+                if requires_review and not task.requires_review and "reviewer_member_id" not in changes:
+                    raise AuthError(422, "VALIDATION_ERROR", "开启验收时请选择确认人")
+                await validate_assignment(session, crew_id, changes.get("owner_member_id", task.owner_member_id), changes.get("reviewer_member_id", task.reviewer_member_id), collaborators, requires_review)
+                for field, value in changes.items(): setattr(task, field, value)
+            elif action == "start": task.status = "in_progress"
+            elif action == "submit":
+                previous = await session.scalar(select(func.max(TaskSubmission.submission_no)).where(TaskSubmission.task_id == task.id, TaskSubmission.crew_id == crew_id))
+                session.add(TaskSubmission(id=uuid4(), crew_id=crew_id, task_id=task.id, submission_no=(previous or 0) + 1,
+                    submitted_by=actor.member_id, completion_note=body.completion_note, review_status="pending" if task.requires_review else "completed", submitted_at=now))
+                task.status = "pending_review" if task.requires_review else "completed"
+            elif action in {"review", "cancel"}:
+                current = await session.scalar(select(TaskSubmission).where(TaskSubmission.crew_id == crew_id,
+                    TaskSubmission.task_id == task.id, TaskSubmission.review_status == "pending").with_for_update())
+                if action == "review":
+                    if current is None or current.id != body.submission_id: raise AuthError(409, "INVALID_STATE", "请审核当前待确认提交")
+                    current.review_status = "accepted" if body.decision == "accept" else "rejected"
+                    current.review_note = body.review_note
+                    task.status = "completed" if body.decision == "accept" else "in_progress"
+                else:
+                    task.status = "cancelled"; task.cancel_reason = body.reason
+                    if current:
+                        current.review_status = "cancelled"; current.review_note = None
+                if current:
+                    current.reviewed_by = actor.member_id; current.reviewed_at = now
+            else: raise ValueError("Unsupported task operation")
+            task.lock_version += 1; task.updated_at = now
+        if action in {"create", "edit"}:
+            await session.execute(delete(TaskCollaborator).where(TaskCollaborator.crew_id == crew_id, TaskCollaborator.task_id == task.id))
+            for member_id in collaborators:
+                session.add(TaskCollaborator(crew_id=crew_id, task_id=task.id, member_id=member_id))
+        result = task_view(task, collaborators, actor)
+        session.add(AuditLog(crew_id=crew_id, actor_type="user", actor_id=user_id, action=f"task.{action}",
+            target_type="task", target_id=task.id, result="success", request_id=request_id, before_summary=before,
+            after_summary={"status": task.status, "lock_version": task.lock_version,
+                "owner_member_id": str(task.owner_member_id), "reviewer_member_id": str(task.reviewer_member_id), "requires_review": task.requires_review,
+                "collaborator_member_ids": [str(item) for item in collaborators]}))
+        recipients = sorted({task.owner_member_id, task.reviewer_member_id, task.created_by_member_id, *old_responsible, *collaborators, *old_collaborators})
+        session.add(TaskChangeEvent(crew_id=crew_id, task_id=task.id, task_version=task.lock_version,
+            kind="complete" if action == "submit" and not task.requires_review else action, actor_member_id=actor.member_id, recipient_member_ids=[str(item) for item in recipients]))
+        if key_digest:
+            session.add(TaskReceipt(crew_id=crew_id, user_id=user_id, task_id=task.id, key_digest=key_digest,
+                request_digest=digest, response_snapshot=result.model_dump(mode="json")))
+        await session.flush()
         return result

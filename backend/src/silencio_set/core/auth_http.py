@@ -33,12 +33,18 @@ class AuthRequestMiddleware:
             return
         messages = []
         size = 0
+        parts = scope["path"].split("/")
+        is_import = len(parts) == 8 and parts[5] == 'scripts' and parts[7] == 'imports'
+        is_photo_upload = len(parts) == 8 and parts[5] == 'locations' and parts[7] == 'photos'
+        max_bytes = 2 * 1024 * 1024 if len(parts) > 5 and parts[5] in {"scripts", "breakdowns", "storyboards", "plan-versions", "call-sheet-versions"} else self.max_bytes
+        if is_import: max_bytes = 20 * 1024 * 1024 + 65536
+        if is_photo_upload: max_bytes = 10 * 1024 * 1024 + 65536
         while True:
             message = await receive()
             if message["type"] == "http.disconnect":
                 return
             size += len(message.get("body", b""))
-            if size > self.max_bytes:
+            if size > max_bytes:
                 response = error_response(scope["state"]["request_id"], 413, "PAYLOAD_TOO_LARGE", "请求内容超过限制")
                 await response(scope, receive, private_send)
                 return
@@ -46,8 +52,9 @@ class AuthRequestMiddleware:
             if not message.get("more_body", False):
                 break
         content_type = dict(scope.get("headers", [])).get(b"content-type", b"").split(b";", 1)[0].strip().lower()
-        if size and content_type != b"application/json":
-            response = error_response(scope["state"]["request_id"], 415, "UNSUPPORTED_MEDIA_TYPE", "请求须使用application/json")
+        expected_type = b'multipart/form-data' if is_import or is_photo_upload else b'application/json'
+        if size and content_type != expected_type:
+            response = error_response(scope["state"]["request_id"], 415, "UNSUPPORTED_MEDIA_TYPE", f"请求须使用{expected_type.decode('ascii')}")
             await response(scope, receive, private_send)
             return
 

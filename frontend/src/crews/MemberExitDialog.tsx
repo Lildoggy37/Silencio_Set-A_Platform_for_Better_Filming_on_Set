@@ -12,7 +12,7 @@ export function MemberExitDialog({ crewId, member, removing, onClose, onReload, 
   crewId: string; member: Member; removing: boolean; onClose: () => void
   onReload: () => Promise<Member>; onSaved: () => Promise<void>
   onOpenTask?: (id: string) => void
-  onOpenResource?: (id: string) => void
+  onOpenResource?: (id: string, resourceType?: string) => void
 }) {
   const { crews, resources, state } = useAuth()
   const [current, setCurrent] = useState(member)
@@ -82,8 +82,8 @@ export function MemberExitDialog({ crewId, member, removing, onClose, onReload, 
       <section aria-label="资源交接检查"><h3>资源交接</h3><ErrorNotice error={resourceChecks.error} />
         {resourceChecks.isFetching && <p role="status">正在检查资源与预约责任…</p>}
         {!resourceChecks.isError && resourceChecks.data && <>
-          <p>{resourceChecks.data.blocking_total === 0 ? '当前没有待交接的资源或未结束预约。退出时仍会重新检查。' : `还有 ${resourceChecks.data.blocking_total} 项资源或未结束预约责任，需要先转交资源或处理预约。`}</p>
-          {resourceChecks.data.items.length > 0 && <ul className="task-list">{resourceChecks.data.items.map(item => <li key={`${item.kind}-${item.id}`}><strong>{item.title}</strong><p>{item.kind === 'resource' ? '资源负责人' : '未结束的预约申请'}</p>{onOpenResource && <Button disabled={pending} onClick={() => { onClose(); onOpenResource(item.resource_id) }}>处理资源：{item.title}</Button>}</li>)}</ul>}
+          <p>{resourceChecks.data.blocking_total === 0 ? '当前没有待交接的资源、预约或未归还实物。退出时仍会重新检查。' : `还有 ${resourceChecks.data.blocking_total} 项资源、预约或未归还实物责任，需要先转交资源或完成借还。`}</p>
+          {resourceChecks.data.items.length > 0 && <ul className="task-list">{resourceChecks.data.items.map(item => <li key={`${item.kind}-${item.id}`}><strong>{item.title}</strong><p>{item.kind === 'resource' ? '资源负责人' : '预约或未归还实物责任'}</p>{onOpenResource && <Button disabled={pending} onClick={() => { onClose(); onOpenResource(item.resource_id, item.resource_type ?? undefined) }}>处理资源：{item.title}</Button>}</li>)}</ul>}
           {resourceChecks.data.restricted_total > 0 && <p className="account-note">其中 {resourceChecks.data.restricted_total} 项责任超出你的查看范围，请联系有权处理的成员。</p>}
           {resourceChecks.data.total > 20 && <div className="list-pagination"><Button disabled={resourcePage === 1 || resourceChecks.isFetching} onClick={() => setResourcePage(resourcePage - 1)}>上一页资源责任</Button><span>第 {resourcePage} 页</span><Button disabled={resourcePage * 20 >= resourceChecks.data.total || resourceChecks.isFetching} onClick={() => setResourcePage(resourcePage + 1)}>下一页资源责任</Button></div>}
         </>}

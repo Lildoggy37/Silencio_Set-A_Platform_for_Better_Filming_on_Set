@@ -15,6 +15,7 @@ from silencio_set.resources.domain import check_version, peak_quantity, require_
 from silencio_set.resources.models import Resource, ResourceScopeGrant, Reservation, ResourceReceipt, ResourceChangeEvent
 from silencio_set.resources.schemas import ResourceAvailability, ResourcePage, ResourceView, ReservationPage, ReservationView, ResourceResponsibilities, ResourceResponsibilityItem
 from silencio_set.tasks.repository import permissions_for, task_actor, request_digest
+from silencio_set.resources.custody_queries import outstanding, unfinished_booking
 
 CAPACITY_LIMIT = 1000
 
@@ -52,10 +53,14 @@ def review_scope(crew_id, actor):
 
 def visible_reservations(crew_id, actor):
     require(actor, "resource.read")
+    checkout_scope = exists(select(1).where(ResourceScopeGrant.crew_id == crew_id,
+        ResourceScopeGrant.resource_id == Resource.id, ResourceScopeGrant.member_id == actor.member_id,
+        ResourceScopeGrant.permission_code == "resource.checkout", ResourceScopeGrant.membership_joined_at == actor.joined_at)) if "resource.checkout" in actor.permissions else literal(False)
     return select(Reservation).join(Resource, (Resource.id == Reservation.resource_id) &
         (Resource.crew_id == Reservation.crew_id)).where(Reservation.crew_id == crew_id,
         or_((Reservation.applicant_member_id == actor.member_id) &
-            (Reservation.applicant_membership_joined_at == actor.joined_at), review_scope(crew_id, actor)))
+            (Reservation.applicant_membership_joined_at == actor.joined_at), review_scope(crew_id, actor),
+            (Reservation.status == "confirmed") & checkout_scope))
 
 
 async def active_member(session, crew_id, member_id):
@@ -108,10 +113,11 @@ async def resource_views(session, rows, actor):
         if "member.authorize" in actor.permissions: actions.append("authorize")
         if "reservation.apply" in actor.permissions and row.status == "available": actions.append("apply")
         result.append(ResourceView(**{field: getattr(row, field) for field in ResourceView.model_fields if field not in {
-            "manager_display_name", "manager_lock_version", "review_ready", "allowed_actions"}},
+            "manager_display_name", "manager_lock_version", "review_ready", "allowed_actions", "custody_actions"}},
             manager_display_name=manager.display_name if manager else "负责人已失效",
             manager_lock_version=manager.lock_version if manager else 0,
-            review_ready=(row.id, row.manager_member_id) in ready, allowed_actions=actions))
+            review_ready=(row.id, row.manager_member_id) in ready, allowed_actions=actions,
+            custody_actions=[action for action, code in (("checkout", "resource.checkout"), ("return", "resource.return")) if code in actor.permissions and code in codes[row.id]]))
     return result
 
 
@@ -146,12 +152,12 @@ def resource_blockers(crew_id, member_id):
 def reservation_blockers(crew_id, member_id):
     return select(Reservation.id).where(Reservation.crew_id == crew_id,
         Reservation.applicant_member_id == member_id, Reservation.status.in_({"pending", "confirmed"}),
-        Reservation.ends_at > func.clock_timestamp())
+        or_(Reservation.ends_at > func.clock_timestamp(), unfinished_booking(crew_id, member_id)))
 
 
 async def check_resource_responsibilities(session, crew_id, member_id):
     if await session.scalar(resource_blockers(crew_id, member_id).limit(1)) is not None or await session.scalar(reservation_blockers(crew_id, member_id).limit(1)) is not None:
-        raise AuthError(409, "MEMBER_HAS_RESOURCE_RESPONSIBILITIES", "仍有负责的资源或未结束预约，请先转交资源、取消或处理预约")
+        raise AuthError(409, "MEMBER_HAS_RESOURCE_RESPONSIBILITIES", "仍有资源、预约或未归还实物责任，请先转交资源或完成借还处理")
 
 
 class ResourceRepository:
@@ -161,7 +167,7 @@ class ResourceRepository:
         async with self.sessions() as session:
             actor = await resource_actor(session, user_id, crew_id)
             require(actor, "resource.read")
-            query = select(Resource).where(Resource.crew_id == crew_id)
+            query = select(Resource).where(Resource.crew_id == crew_id, Resource.resource_type != "consumable")
             total = await session.scalar(select(func.count()).select_from(query.subquery()))
             rows = (await session.scalars(query.order_by(Resource.created_at, Resource.id).offset((page - 1) * page_size).limit(page_size))).all()
             return ResourcePage(items=await resource_views(session, rows, actor), total=total, page=page, page_size=page_size)
@@ -170,7 +176,7 @@ class ResourceRepository:
         async with self.sessions() as session:
             actor = await resource_actor(session, user_id, crew_id)
             require(actor, "resource.read")
-            row = await session.scalar(select(Resource).where(Resource.crew_id == crew_id, Resource.id == resource_id))
+            row = await session.scalar(select(Resource).where(Resource.crew_id == crew_id, Resource.id == resource_id, Resource.resource_type != "consumable"))
             if row is None: raise not_found()
             return (await resource_views(session, [row], actor))[0]
 
@@ -183,6 +189,7 @@ class ResourceRepository:
             row = await session.scalar(select(Resource).where(Resource.crew_id == crew_id, Resource.id == resource_id))
             if row is None: raise not_found()
             rows = await capacity_rows(session, row, window.range_start, window.range_end)
+            if row.resource_type == "consumable": raise AuthError(409, "RESOURCE_TYPE_UNSUPPORTED", "耗材库存不使用时段预约余量")
             peak = peak_quantity(intervals(rows), window.range_start, window.range_end)
             return ResourceAvailability(resource_id=row.id, resource_lock_version=row.lock_version,
                 range_start=window.range_start, range_end=window.range_end, total_quantity=row.total_quantity,
@@ -221,10 +228,10 @@ class ResourceRepository:
                 CrewMember.id == member_id, CrewMember.status == "active"))
             if member is None: raise not_found()
             managed = select(literal("resource").label("kind"), Resource.id, Resource.id.label("resource_id"),
-                Resource.name.label("title"), Resource.status, Resource.lock_version,
+                Resource.name.label("title"), Resource.resource_type, Resource.status, Resource.lock_version,
                 literal(None).cast(Reservation.ends_at.type).label("ends_at")).where(Resource.id.in_(resource_blockers(crew_id, member_id)))
             bookings = select(literal("reservation").label("kind"), Reservation.id, Reservation.resource_id,
-                Resource.name.label("title"), Reservation.status, Reservation.lock_version, Reservation.ends_at).join(
+                Resource.name.label("title"), Resource.resource_type, Reservation.status, Reservation.lock_version, Reservation.ends_at).join(
                 Resource, (Resource.id == Reservation.resource_id) & (Resource.crew_id == Reservation.crew_id)).where(
                 Reservation.id.in_(reservation_blockers(crew_id, member_id)))
             all_rows = union_all(managed, bookings).subquery()
@@ -261,6 +268,8 @@ class ResourceRepository:
             resource = await session.scalar(select(Resource).where(Resource.crew_id == crew_id,
                 Resource.id == resource_id).with_for_update()) if resource_id is not None else None
             if resource_id is not None and resource is None: raise not_found()
+            if resource is not None and resource.resource_type == "consumable":
+                raise AuthError(409, "RESOURCE_TYPE_UNSUPPORTED", "耗材请使用库存接口")
             codes = await scope_codes(session, resource, actor) if resource else set()
             reviewer = bool(resource and can_review(resource, actor, codes))
             if action == "edit" and not can_manage(actor, codes): raise AuthError(403, "FORBIDDEN", "没有此资源的维护权限")
@@ -292,7 +301,13 @@ class ResourceRepository:
             elif action == "edit":
                 check_version(resource, body.expected_lock_version)
                 changes = body.model_dump(exclude_unset=True, exclude={"expected_lock_version"})
+                if "unit" in changes and changes['unit'] != resource.unit:
+                    from silencio_set.plans.dependencies import check_resource_unit_dependency
+                    await check_resource_unit_dependency(session, crew_id, resource.id)
                 if "total_quantity" in changes or changes.get("status") == "disabled":
+                    physical = await outstanding(session, crew_id, resource_id=resource.id)
+                    if physical > changes.get("total_quantity", resource.total_quantity):
+                        raise AuthError(409, "PHYSICAL_CAPACITY_CONFLICT", "登记总量不能低于未归还实物数量")
                     rows = await capacity_rows(session, resource, now)
                     if rows and changes.get("status") == "disabled": raise AuthError(409, "RESOURCE_IN_USE", "仍有未结束的已批准预约，不能停用")
                     peak = peak_quantity(intervals(rows), now, datetime.max.replace(tzinfo=timezone.utc))
@@ -330,9 +345,15 @@ class ResourceRepository:
                 if resource.status != "available": raise AuthError(409, "RESOURCE_UNAVAILABLE", "资源已停用")
                 if body.starts_at < now or body.quantity > resource.total_quantity:
                     raise AuthError(409, "INVALID_RESERVATION", "预约开始时间不能早于当前时间，数量不能超过登记总量")
+                direct = resource.approval_policy == "automatic" or reviewer
+                if direct:
+                    rows = await capacity_rows(session, resource, body.starts_at, body.ends_at)
+                    require_capacity(intervals(rows), body.starts_at, body.ends_at, body.quantity, resource.total_quantity)
                 booking = Reservation(id=uuid4(), crew_id=crew_id, resource_id=resource.id,
                     applicant_member_id=actor.member_id, applicant_membership_joined_at=actor.joined_at,
-                    starts_at=body.starts_at, ends_at=body.ends_at, quantity=body.quantity, status="pending",
+                    starts_at=body.starts_at, ends_at=body.ends_at, quantity=body.quantity, status="confirmed" if direct else "pending",
+                    confirmation_mode="automatic" if direct and not reviewer else "manual",
+                    reviewed_by=actor.member_id if direct and reviewer else None, reviewed_at=now if direct and reviewer else None,
                     lock_version=1, created_at=now, updated_at=now)
                 session.add(booking)
             elif action in {"decide", "cancel"}:
@@ -352,6 +373,10 @@ class ResourceRepository:
                     booking.decision_note, booking.approval_request_key = body.decision_note, key
                 else:
                     if booking.status not in {"pending", "confirmed"} or booking.ends_at <= now: raise AuthError(409, "INVALID_STATE", "仅未结束的待审批或已批准预约可取消")
+                    from silencio_set.plans.dependencies import check_booking_dependency
+                    await check_booking_dependency(session, crew_id, booking.id)
+                    if await outstanding(session, crew_id, reservation_id=booking.id) > 0:
+                        raise AuthError(409, "RESOURCE_NOT_RETURNED", "须先归还该预约的全部实物才能取消")
                     booking.status = "cancelled"
                     booking.cancelled_by, booking.cancelled_at, booking.cancel_reason = actor.member_id, now, body.reason
                 booking.lock_version += 1
@@ -364,7 +389,7 @@ class ResourceRepository:
             after = {"lock_version": target.lock_version, "status": target.status, "resource_id": str(resource.id)}
             if not is_booking:
                 after.update(manager_member_id=str(resource.manager_member_id), total_quantity=resource.total_quantity,
-                    name=resource.name, unit=resource.unit)
+                    name=resource.name, unit=resource.unit, approval_policy=resource.approval_policy)
             session.add(AuditLog(crew_id=crew_id, actor_type="user", actor_id=user_id,
                 action=f"resource.{action}", target_type="resource_reservation" if is_booking else "resource", target_id=target.id,
                 result="success", request_id=request_id, before_summary=before,

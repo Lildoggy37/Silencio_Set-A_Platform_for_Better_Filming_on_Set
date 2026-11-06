@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, ForeignKeyConstraint, Index, Integer, String, UniqueConstraint, func, text
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, ForeignKeyConstraint, Index, Integer, String, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -29,6 +29,7 @@ class Task(Base):
     description: Mapped[str | None] = mapped_column(String(3000))
     owner_member_id: Mapped[UUID]
     reviewer_member_id: Mapped[UUID]
+    requires_review: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("true"))
     created_by_member_id: Mapped[UUID]
     due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(String(20), default="pending", server_default="pending")
@@ -59,8 +60,8 @@ class TaskSubmission(Base):
         UniqueConstraint("task_id", "submission_no", name="uq_task_submissions_number"),
         CheckConstraint("submission_no >= 1", name="number_positive"),
         CheckConstraint("char_length(completion_note) BETWEEN 1 AND 2000", name="note_valid"),
-        CheckConstraint("review_status IN ('pending','accepted','rejected','cancelled')", name="review_status_valid"),
-        CheckConstraint("(review_status = 'pending' AND reviewed_by IS NULL AND reviewed_at IS NULL) OR (review_status <> 'pending' AND reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL AND reviewed_at >= submitted_at)", name="review_pair"),
+        CheckConstraint("review_status IN ('pending','accepted','rejected','cancelled','completed')", name="review_status_valid"),
+        CheckConstraint("(review_status IN ('pending','completed') AND reviewed_by IS NULL AND reviewed_at IS NULL) OR (review_status NOT IN ('pending','completed') AND reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL AND reviewed_at >= submitted_at)", name="review_pair"),
         CheckConstraint("review_status <> 'rejected' OR (review_note IS NOT NULL AND char_length(review_note) BETWEEN 1 AND 500)", name="rejection_note"),
         Index("uq_task_submissions_current_pending", "task_id", unique=True, postgresql_where=text("review_status = 'pending'")),
     )
@@ -103,6 +104,7 @@ class TaskChangeEvent(Base):
         UniqueConstraint("task_id", "task_version", name="uq_task_events_version"),
         UniqueConstraint("crew_id", "id", name="uq_task_events_crew_id_id"),
         CheckConstraint("dispatch_status IN ('pending','dispatched','failed')", name="dispatch_status_valid"),
+        Index('ix_task_events_pending', 'created_at', 'id', postgresql_where=text("dispatch_status = 'pending'")),
     )
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     crew_id: Mapped[UUID]

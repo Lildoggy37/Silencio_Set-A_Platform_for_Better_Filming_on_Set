@@ -58,7 +58,7 @@ export function InvitationManager({ crewId, userId }: { crewId: string; userId: 
       if (!(failure instanceof AccountError) || ['NETWORK_UNCONFIRMED', 'INVALID_RESPONSE', 'SERVICE_UNAVAILABLE', 'VERSION_CONFLICT'].includes(failure.code) || failure.status >= 500) setUncertain(true)
     } finally { lock.current = false; setPending(false) }
   }
-  return <><Button aria-label="邀请成员" onClick={() => setOpen(true)}>邀请成员</Button><Modal title="成员邀请" open={open} onCancel={() => setOpen(false)} footer={null} width={680}
+  return <><Button type="primary" aria-label="邀请成员" onClick={() => setOpen(true)}>邀请成员</Button><Modal title="成员邀请" open={open} onCancel={() => setOpen(false)} footer={null} width={680}
     closable={!pending} keyboard={!pending} mask={{ closable: !pending }}>
     <form className="account-form" noValidate onSubmit={event => { event.preventDefault(); if (uncertain) return; void run(async () => {
       if (!email.includes('@') || email.length > 254 || /[\r\n\0]/.test(email)) throw new AccountError('VALIDATION_ERROR')

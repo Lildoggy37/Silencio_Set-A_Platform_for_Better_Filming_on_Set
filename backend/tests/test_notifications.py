@@ -1,6 +1,7 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
 from io import StringIO
+from types import SimpleNamespace as NS
 from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
@@ -37,7 +38,9 @@ def notice_row(*, current=True, requires=True, confirmed=False):
     recipient = NotificationRecipient(crew_id=task.crew_id, notification_id=notice.id, member_id=task.owner_member_id,
         membership_joined_at=now - timedelta(days=1), requires_confirmation=requires,
         read_at=now if confirmed else None, confirmed_at=now if confirmed else None)
-    return notice, recipient, event, task
+    source = NS(source_type='task', source_id=task.id, object_title=task.title, object_version=event.task_version,
+        current_object_version=task.lock_version, is_current=current, source_status='current' if current else 'updated', can_open_source=True)
+    return notice, recipient, source
 
 
 def test_notification_scope_requires_receiver_epoch_current_task_visibility_and_permission():
@@ -68,7 +71,7 @@ def consumer_fixture(monkeypatch):
     member = CrewMember(id=task.owner_member_id, crew_id=task.crew_id, status="active", joined_at=now - timedelta(days=1))
     event = TaskChangeEvent(id=uuid4(), crew_id=task.crew_id, task_id=task.id, task_version=1, kind="create",
         actor_member_id=task.created_by_member_id, created_at=now, recipient_member_ids=[str(member.id), str(member.id)], dispatch_status="pending")
-    session.execute.return_value = Mock(one_or_none=Mock(return_value=(event.id, task.crew_id)))
+    session.execute.return_value = Mock(one_or_none=Mock(return_value=(event.id, task.crew_id, "task")))
     session.scalar.side_effect = [Crew(id=task.crew_id), event, None, task]
     session.scalars.return_value = Mock(all=Mock(return_value=[member]))
     monkeypatch.setattr(module, "collaborators_for", AsyncMock(return_value={task.id: []}))
@@ -125,7 +128,7 @@ def test_no_candidate_or_another_consumers_claim_has_no_side_effect(monkeypatch)
     session.execute.return_value = Mock(one_or_none=Mock(return_value=None))
     assert not asyncio.run(NotificationConsumer(factory).consume_once())
     session.scalar.assert_not_awaited()
-    session.execute.return_value = Mock(one_or_none=Mock(return_value=(event.id, event.crew_id)))
+    session.execute.return_value = Mock(one_or_none=Mock(return_value=(event.id, event.crew_id, "task")))
     session.scalar.side_effect = [Crew(id=event.crew_id), None]
     assert not asyncio.run(NotificationConsumer(factory).consume_once())
     session.add.assert_not_called()
@@ -163,7 +166,7 @@ def test_acknowledgement_binds_version_marks_read_and_preserves_prior_confirmati
     args = (uuid4(), row[0].crew_id, row[0].id, "acknowledge", "a" * 32)
     first = asyncio.run(repo.mark(*args, object_version=1))
     assert first.read_at == first.confirmed_at
-    row[3].lock_version = 2
+    row[2].current_object_version = 2; row[2].is_current = False; row[2].source_status = 'updated'
     repeated = asyncio.run(repo.mark(*args, object_version=1))
     assert repeated.confirmed_at == first.confirmed_at and not repeated.is_current
     assert session.add.call_count == 1

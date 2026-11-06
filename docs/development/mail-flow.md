@@ -1,5 +1,7 @@
 # 账号模块第三步：验证邮件与Outbox
 
+最新联调状态：已在真实 PostgreSQL 17.11、Redis 7.4.12、RabbitMQ 4.4.0 和 Linux Celery 5.6.3 prefork Worker 上跑通本地注册邮件、重复投递去重、验证码兑换、注册、登录及邀请确认入组。无需 Docker；启动方式及边界见[消息与邮件](mail-integration.md)和[邀请入组联调](invitation-integration.md)。下文保留早期阶段记录，其中“真实依赖尚未验证”以最新记录为准，外部 SMTP 和完整邀请浏览器操作仍待验证。
+
 阶段记录：本页保留验证码邮件链路实现与验证说明；后续已接前端账号及独立邀请邮件任务，最新迁移`0005_invitations`和状态见[邀请链路说明](invitations.md)。真实PostgreSQL/Redis/RabbitMQ/Mailpit容器联调尚未完成。认证和邮件默认关闭，不宣称软件已可完整使用或已通过高QPS验收。
 
 ## 1. 核心路径与阅读顺序

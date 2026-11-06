@@ -88,7 +88,7 @@ class AvailabilityView(BaseModel):
     range_end: datetime
     intervals: list[AvailabilityInterval]
     unregistered: list[TimeWindow]
-    plan_review_status: Literal["not_implemented"] = "not_implemented"
+    plan_review_status: Literal["not_implemented", "current_published_plans"] = "current_published_plans"
 
 
 class AvailabilityPage(BaseModel):

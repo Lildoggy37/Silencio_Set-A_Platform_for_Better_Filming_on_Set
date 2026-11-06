@@ -42,7 +42,7 @@ function start(handler: (path: string, options?: RequestInit) => Response | Prom
 async function selectCrew() {
   fireEvent.click(await screen.findByRole('button', { name: '选择或创建剧组' }))
   fireEvent.click(await screen.findByRole('button', { name: '学生剧组 · 雨停之前' }))
-  await screen.findByText('学生剧组 · 雨停之前')
+  await screen.findByText('《雨停之前》', { selector: '.project-context strong' })
 }
 
 test('self exit requires explicit confirmation and clears current crew and its cache on success', async () => {
@@ -54,13 +54,13 @@ test('self exit requires explicit confirmation and clears current crew and its c
     throw new Error('Unexpected request')
   })
   await selectCrew()
-  fireEvent.click(screen.getByRole('button', { name: '退出当前剧组' }))
+  fireEvent.click(screen.getByRole('button', { name: '剧组设置' })); fireEvent.click(await screen.findByRole('menuitem', { name: '退出当前剧组' }))
   const confirm = await screen.findByRole('button', { name: '确认退出剧组' })
   await waitFor(() => expect(confirm.hasAttribute('disabled')).toBe(false))
   expect(fetcher.mock.calls.some(([path]) => path.endsWith('/me/leave'))).toBe(false)
   fireEvent.click(confirm); fireEvent.click(confirm)
   await screen.findByRole('button', { name: '选择或创建剧组' })
-  expect(screen.queryByText('学生剧组 · 雨停之前')).toBeNull()
+  expect(screen.queryByText('《雨停之前》', { selector: '.project-context strong' })).toBeNull()
   expect(fetcher.mock.calls.filter(([path]) => path.endsWith('/me/leave'))).toHaveLength(1)
   await waitFor(() => expect(client.getQueriesData({ queryKey: ['crews', userId, crewId] })).toHaveLength(0))
 })
@@ -72,12 +72,12 @@ test('last admin rejection leaves confirmation open and preserves crew access', 
     return ok(crew)
   })
   await selectCrew()
-  fireEvent.click(screen.getByRole('button', { name: '退出当前剧组' }))
+  fireEvent.click(screen.getByRole('button', { name: '剧组设置' })); fireEvent.click(await screen.findByRole('menuitem', { name: '退出当前剧组' }))
   await waitFor(() => expect(screen.getByRole('button', { name: '确认退出剧组' }).hasAttribute('disabled')).toBe(false))
   fireEvent.click(screen.getByRole('button', { name: '确认退出剧组' }))
   await screen.findByText('剧组至少需要一名有效管理员，请先完成管理员交接。')
   expect(screen.getByRole('button', { name: '确认退出剧组' })).toBeTruthy()
-  expect(screen.getByText('学生剧组 · 雨停之前')).toBeTruthy()
+  expect(screen.getByText('《雨停之前》', { selector: '.project-context strong' })).toBeTruthy()
 })
 
 test('unknown exit result blocks replay until an explicit read and uses the new version', async () => {
@@ -93,7 +93,7 @@ test('unknown exit result blocks replay until an explicit read and uses the new 
     return ok({ ...crew, membership: { ...member, lock_version: version } })
   })
   await selectCrew()
-  fireEvent.click(screen.getByRole('button', { name: '退出当前剧组' }))
+  fireEvent.click(screen.getByRole('button', { name: '剧组设置' })); fireEvent.click(await screen.findByRole('menuitem', { name: '退出当前剧组' }))
   await waitFor(() => expect(screen.getByRole('button', { name: '确认退出剧组' }).hasAttribute('disabled')).toBe(false))
   fireEvent.click(screen.getByRole('button', { name: '确认退出剧组' }))
   const reload = await screen.findByRole('button', { name: '读取当前成员状态' })

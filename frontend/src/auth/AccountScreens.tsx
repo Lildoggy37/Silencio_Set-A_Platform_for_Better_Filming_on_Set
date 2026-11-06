@@ -21,7 +21,7 @@ export function AccountFrame({ children, title, subtitle, actions }: { children:
     <header className="topbar account-topbar"><div className="identity"><span className="monogram">SS</span><span>Silencio Set<small>寂静片场</small></span></div><div className="account-header-actions">{actions}</div></header>
     <main className="account-layout" id="main">
       <aside className="account-art" aria-label="SS · Silencio Set">
-        <div className="account-wordmark" aria-hidden="true">{Array.from({ length: 15 }, (_, row) =>
+        <div className="account-wordmark" aria-hidden="true">{Array.from({ length: 32 }, (_, row) =>
           <div className="account-wordmark-row" key={row}>{Array.from({ length: 5 }, (_, word) => <span key={word}><b>SS</b> Silencio Set</span>)}</div>,
         )}</div>
       </aside>

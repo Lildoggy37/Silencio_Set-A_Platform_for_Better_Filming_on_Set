@@ -129,6 +129,10 @@ class OrganizationRepository:
             await session.execute(delete(MemberRole).where(MemberRole.crew_id == crew_id, MemberRole.member_id == member_id))
             for code in body.role_codes:
                 session.add(MemberRole(crew_id=crew_id, member_id=member_id, role_code=code))
+            if ('actor' in previous) != ('actor' in body.role_codes):
+                from silencio_set.creative.casting import mark_member_casting_review
+                now = await session.scalar(select(func.clock_timestamp()))
+                await mark_member_casting_review(session, crew_id, member_id, now)
             target.lock_version += 1
             session.add(AuditLog(crew_id=crew_id, actor_type="user", actor_id=user_id, action="member.roles.replace",
                 target_type="crew_member", target_id=member_id, result="success", request_id=request_id,

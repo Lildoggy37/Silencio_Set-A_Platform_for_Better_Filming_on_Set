@@ -10,6 +10,11 @@ const calendar = { ...range, member_id: member, display_name: '摄影', membersh
   intervals: [], unregistered: [{ starts_at: range.range_start, ends_at: range.range_end }], plan_review_status: 'not_implemented' }
 const ok = (data: unknown) => new Response(JSON.stringify({ data }), { status: 200 })
 
+test('current plan review integration status is preserved from the backend', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(ok({ ...calendar, plan_review_status: 'current_published_plans' })))
+  expect((await createAvailabilityClient(createHttpClient()).own(crew, member, range)).plan_review_status).toBe('current_published_plans')
+})
+
 test('empty calendar remains unknown and a missing unknown gap is rejected', async () => {
   const fetcher = vi.fn().mockResolvedValueOnce(ok({ ...calendar, email: 'private@example.com' })).mockResolvedValueOnce(ok({ ...calendar, unregistered: [] }))
   vi.stubGlobal('fetch', fetcher)

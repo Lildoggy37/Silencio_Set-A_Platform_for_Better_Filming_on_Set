@@ -7,13 +7,18 @@ const resourceId = '33333333-3333-4333-8333-333333333333'
 const memberId = '44444444-4444-4444-8444-444444444444'
 const bookingId = '55555555-5555-4555-8555-555555555555'
 const key = '66666666-6666-4666-8666-666666666666'
-const resource = { id: resourceId, crew_id: crewId, name: '摄影机', resource_type: 'equipment', unit: '台', total_quantity: 2, status: 'available', description: null,
+const resource = { id: resourceId, crew_id: crewId, name: '摄影机', resource_type: 'equipment', unit: '台', total_quantity: 2, approval_policy: 'manual', status: 'available', description: null,
   manager_member_id: memberId, manager_display_name: '制片', manager_lock_version: 1, review_ready: false, lock_version: 1, created_at: '2026-10-28T00:00:00Z', updated_at: '2026-10-28T00:00:00Z', allowed_actions: ['apply'] }
 const reservation = { id: bookingId, crew_id: crewId, resource_id: resourceId, applicant_member_id: memberId, starts_at: '2099-01-01T09:00:00Z', ends_at: '2099-01-01T10:00:00Z', quantity: 1,
-  status: 'pending', reviewed_by: null, reviewed_at: null, decision_note: null, cancelled_by: null, cancelled_at: null, cancel_reason: null, lock_version: 1,
+  confirmation_mode: 'manual', status: 'pending', reviewed_by: null, reviewed_at: null, decision_note: null, cancelled_by: null, cancelled_at: null, cancel_reason: null, lock_version: 1,
   created_at: '2026-10-28T00:00:00Z', updated_at: '2026-10-28T00:00:00Z', allowed_actions: ['cancel'], dependency_check_status: 'not_implemented' }
 const ok = (data: unknown, status = 200) => new Response(JSON.stringify({ data }), { status })
 const page = (row: unknown) => ({ items: [row], total: 1, page: 1, page_size: 20 })
+
+test('booking responses accept the current published plan dependency contract', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(ok(page({ ...reservation, dependency_check_status: 'current_published_plans' }))))
+  expect((await createResourceClient(createHttpClient()).reservations(crewId, resourceId)).items[0].dependency_check_status).toBe('current_published_plans')
+})
 
 test('resource responses drop unrelated private fields and reject cross-crew and unsafe actions', async () => {
   const fetcher = vi.fn().mockResolvedValueOnce(ok(page({ ...resource, email: 'private@example.com' })))
@@ -73,4 +78,14 @@ test('responsibility counts include restricted bookings without leaking their de
   vi.stubGlobal('fetch', fetcher); const api = createResourceClient(createHttpClient())
   expect((await api.responsibilities(crewId, memberId)).blocking_total).toBe(2)
   await expect(api.responsibilities(crewId, memberId)).rejects.toMatchObject({ code: 'INVALID_RESPONSE' })
+})
+
+
+test('an automatic booking succeeds without creating a fictitious reviewer', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(ok({ csrf_token: 'c'.repeat(64) }))
+    .mockResolvedValueOnce(ok({ ...reservation, status: 'confirmed', confirmation_mode: 'automatic' }, 201)))
+  const result = await createResourceClient(createHttpClient()).execute(crewId, {
+    action: 'apply', key, body: { resource_id: resourceId },
+  })
+  expect(result).toMatchObject({ status: 'confirmed', confirmation_mode: 'automatic', reviewed_by: null })
 })

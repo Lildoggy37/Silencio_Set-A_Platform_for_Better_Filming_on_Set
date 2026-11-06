@@ -13,11 +13,12 @@ class Resource(Base):
     __table_args__ = (
         UniqueConstraint("crew_id", "id", name="uq_resources_crew_id_id"),
         *(ForeignKeyConstraint(["crew_id", field], ["crew_members.crew_id", "crew_members.id"], ondelete="RESTRICT", name=f"fk_resources_{field}_member") for field in ("manager_member_id", "created_by_member_id")),
-        CheckConstraint("resource_type IN ('equipment','prop','location')", name="type_valid"),
+        CheckConstraint("resource_type IN ('equipment','prop','location','consumable')", name="type_valid"),
+        CheckConstraint("approval_policy IN ('manual','automatic')", name="approval_policy_valid"),
         CheckConstraint("status IN ('available','disabled')", name="status_valid"),
         CheckConstraint("char_length(name) BETWEEN 1 AND 100 AND name = btrim(name) AND name !~ '[[:cntrl:]]'", name="name_valid"),
         CheckConstraint("char_length(unit) BETWEEN 1 AND 10 AND unit !~ '[[:cntrl:]]'", name="unit_valid"),
-        CheckConstraint("total_quantity BETWEEN 1 AND 1000000", name="quantity_valid"),
+        CheckConstraint("(resource_type = 'consumable' AND total_quantity IS NULL AND stock_quantity BETWEEN 0 AND 2147483647 AND stock_quantity IS NOT NULL) OR (resource_type <> 'consumable' AND total_quantity BETWEEN 1 AND 1000000 AND total_quantity IS NOT NULL AND stock_quantity IS NULL)", name="quantity_valid"),
         CheckConstraint("lock_version BETWEEN 1 AND 2147483647", name="version_valid"),
         Index("ix_resources_crew_created", "crew_id", "created_at", "id"),
         Index("ix_resources_crew_manager", "crew_id", "manager_member_id"),
@@ -29,8 +30,10 @@ class Resource(Base):
     manager_member_id: Mapped[UUID]
     created_by_member_id: Mapped[UUID]
     unit: Mapped[str] = mapped_column(String(10))
-    total_quantity: Mapped[int] = mapped_column(Integer)
+    total_quantity: Mapped[int | None] = mapped_column(Integer)
+    stock_quantity: Mapped[int | None] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(20), default="available", server_default="available")
+    approval_policy: Mapped[str] = mapped_column(String(20), default="manual", server_default="manual")
     description: Mapped[str | None] = mapped_column(String(2000))
     lock_version: Mapped[int] = mapped_column(Integer, default=1, server_default=text("1"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -63,7 +66,8 @@ class Reservation(Base):
         CheckConstraint("quantity BETWEEN 1 AND 1000000", name="quantity_valid"),
         CheckConstraint("status IN ('pending','confirmed','rejected','cancelled')", name="status_valid"),
         CheckConstraint("(reviewed_by IS NULL AND reviewed_at IS NULL) OR (reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL)", name="review_pair"),
-        CheckConstraint("status NOT IN ('confirmed','rejected') OR reviewed_by IS NOT NULL", name="reviewed_state"),
+        CheckConstraint("(status NOT IN ('confirmed','rejected') OR reviewed_by IS NOT NULL OR (status = 'confirmed' AND confirmation_mode = 'automatic')) AND (confirmation_mode <> 'automatic' OR reviewed_by IS NULL)", name="reviewed_state"),
+        CheckConstraint("confirmation_mode IN ('manual','automatic')", name="confirmation_mode_valid"),
         CheckConstraint("status <> 'rejected' OR (decision_note IS NOT NULL AND char_length(decision_note) BETWEEN 1 AND 500)", name="rejection_note"),
         CheckConstraint("(status = 'cancelled' AND cancelled_by IS NOT NULL AND cancelled_at IS NOT NULL AND cancel_reason IS NOT NULL) OR (status <> 'cancelled' AND cancelled_by IS NULL AND cancelled_at IS NULL AND cancel_reason IS NULL)", name="cancel_pair"),
         CheckConstraint("lock_version BETWEEN 1 AND 2147483647", name="version_valid"),
@@ -79,6 +83,7 @@ class Reservation(Base):
     ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     quantity: Mapped[int] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(20), default="pending", server_default="pending")
+    confirmation_mode: Mapped[str] = mapped_column(String(20), default="manual", server_default="manual")
     reviewed_by: Mapped[UUID | None]
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     decision_note: Mapped[str | None] = mapped_column(String(500))

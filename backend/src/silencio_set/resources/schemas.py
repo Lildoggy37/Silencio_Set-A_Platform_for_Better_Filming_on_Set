@@ -19,6 +19,7 @@ class ResourceCreate(BaseModel):
     total_quantity: int = Field(strict=True, ge=1, le=1_000_000)
     manager_member_id: UUID
     description: StrictStr | None = None
+    approval_policy: Literal["manual", "automatic"] = "manual"
 
     @field_validator("name", "unit")
     @classmethod
@@ -37,6 +38,7 @@ class ResourcePatch(VersionInput):
     total_quantity: int | None = Field(default=None, strict=True, ge=1, le=1_000_000)
     status: Literal["available", "disabled"] | None = None
     description: StrictStr | None = None
+    approval_policy: Literal["manual", "automatic"] | None = None
 
     @model_validator(mode="after")
     def valid_changes(self):
@@ -98,10 +100,12 @@ class ResourceView(BaseModel):
     manager_display_name: str
     manager_lock_version: int
     review_ready: bool
+    approval_policy: Literal["manual", "automatic"] = "manual"
     lock_version: int
     created_at: datetime
     updated_at: datetime
     allowed_actions: list[Literal["edit", "authorize", "apply"]]
+    custody_actions: list[Literal["checkout", "return"]] = Field(default_factory=list)
 
 
 class ResourcePage(BaseModel):
@@ -120,6 +124,7 @@ class ReservationView(BaseModel):
     ends_at: datetime
     quantity: int
     status: Literal["pending", "confirmed", "rejected", "cancelled"]
+    confirmation_mode: Literal["manual", "automatic"] = "manual"
     reviewed_by: UUID | None
     reviewed_at: datetime | None
     decision_note: str | None
@@ -130,7 +135,7 @@ class ReservationView(BaseModel):
     created_at: datetime
     updated_at: datetime
     allowed_actions: list[Literal["accept", "reject", "cancel"]]
-    dependency_check_status: Literal["not_implemented"] = "not_implemented"
+    dependency_check_status: Literal["not_implemented", "current_published_plans"] = "current_published_plans"
 
 
 class ReservationPage(BaseModel):
@@ -153,6 +158,7 @@ class ResourceAvailability(BaseModel):
 
 
 class ResourceResponsibilityItem(BaseModel):
+    resource_type: str | None = None
     kind: Literal["resource", "reservation"]
     id: UUID
     resource_id: UUID

@@ -44,9 +44,10 @@ function start(handler: (path: string, options?: RequestInit) => Response | Prom
 async function open(mode: 'own' | 'crew' = 'own') {
   fireEvent.click(await screen.findByRole('button', { name: '选择或创建剧组' }))
   fireEvent.click(await screen.findByRole('button', { name: '学生剧组 · 雨停之前' }))
-  await screen.findByText('学生剧组 · 雨停之前')
+  await screen.findByText('《雨停之前》', { selector: '.project-context strong' })
   fireEvent.click(screen.getByRole('button', { name: '排期' }))
   fireEvent.click(await screen.findByRole('button', { name: mode === 'own' ? '我的档期' : '剧组档期' }))
+  if (mode === 'own') fireEvent.click(await screen.findByText('查看已保存的登记'))
 }
 
 test('unknown time is not free time and a new interval requires explicit review then save', async () => {

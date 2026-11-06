@@ -1,12 +1,14 @@
 from uuid import UUID
+from typing import Literal
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 
 from silencio_set.accounts.errors import AuthError
 from silencio_set.api.accounts import auth_service, client_ip, completed_user, csrf_browser
 from silencio_set.api.crews import Page, PageSize
 from silencio_set.core.http import Envelope, ErrorEnvelope
 from silencio_set.notifications.schemas import AcknowledgeInput, EmptyInput, NotificationPage, NotificationView
+from silencio_set.notifications.receipt_schemas import ReceiptPage
 
 router = APIRouter(prefix="/api/v1/crews/{crew_id}/notifications", tags=["notifications"], responses={
     code: {"model": ErrorEnvelope} for code in (401, 403, 404, 409, 413, 415, 422, 429, 500, 503)
@@ -33,6 +35,12 @@ async def list_notifications(crew_id: UUID, request: Request, page: Page = 1, pa
                               user=Depends(completed_user), service=Depends(notification_service)):
     return await run(request, user, service, "list", crew_id, page=page, page_size=page_size,
         unread=unread, needs_acknowledgement=needs_acknowledgement)
+
+
+@router.get('/receipts/{kind}/{version_id}', response_model=Envelope[ReceiptPage])
+async def publication_receipts(crew_id: UUID, kind: Literal['plan', 'call_sheet'], version_id: UUID, request: Request,
+                               page: Page=1, page_size: int=Query(default=20, ge=1, le=20), user=Depends(completed_user), service=Depends(notification_service)):
+    return await run(request, user, service, 'receipts', crew_id, kind=kind, version_id=version_id, page=page, page_size=page_size)
 
 
 @router.get("/{notification_id}", response_model=Envelope[NotificationView])

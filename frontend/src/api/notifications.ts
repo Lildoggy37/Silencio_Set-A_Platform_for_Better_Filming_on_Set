@@ -1,9 +1,10 @@
 import { AccountError } from './accounts'
 import type { Page } from './crews'
 import type { HttpClient } from './http'
+import { createReceiptClient } from './receiptManagement'
 
-export type Notice = { id: string; event_type: string; title: string; summary: string; created_at: string; task_id: string; task_title: string;
-  object_version: number; current_object_version: number; is_current: boolean; requires_confirmation: boolean; read_at: string | null; confirmed_at: string | null }
+export type Notice = { id: string; event_type: string; title: string; summary: string; created_at: string; source_type: 'task' | 'plan' | 'call_sheet'; source_id: string; object_title: string;
+  object_version: number; current_object_version: number | null; source_status: string; can_open_source: boolean; is_current: boolean; requires_confirmation: boolean; read_at: string | null; confirmed_at: string | null }
 export type NoticeFilter = '' | 'unread' | 'needs_acknowledgement'
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value)
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i
@@ -15,19 +16,22 @@ const version = (value: unknown): value is number => number(value) && value > 0 
 const invalid = () => new AccountError('INVALID_RESPONSE')
 function checkedId(value: string) { if (!id(value)) throw invalid(); return value }
 function parse(value: unknown): Notice {
-  if (!record(value) || !id(value.id) || !id(value.task_id) || !text(value.title, 100) || !text(value.summary, 2000) || !text(value.task_title, 100)
-    || !date(value.created_at) || !version(value.object_version) || !version(value.current_object_version) || typeof value.requires_confirmation !== 'boolean'
-    || value.is_current !== (value.object_version === value.current_object_version) || !(value.read_at === null || date(value.read_at))
+  if (!record(value) || !id(value.id) || !id(value.source_id) || !text(value.title, 100) || !text(value.summary, 2000) || !text(value.object_title, 100)
+    || !date(value.created_at) || !version(value.object_version) || !(value.current_object_version === null || version(value.current_object_version)) || typeof value.requires_confirmation !== 'boolean'
+    || typeof value.is_current !== 'boolean' || value.is_current && value.object_version !== value.current_object_version
+    || !['task', 'plan', 'call_sheet'].includes(String(value.source_type)) || typeof value.can_open_source !== 'boolean'
+    || !['current', 'updated', 'review_required', 'superseded', 'withdrawn'].includes(String(value.source_status)) || !(value.read_at === null || date(value.read_at))
     || !(value.confirmed_at === null || date(value.confirmed_at) && value.requires_confirmation && date(value.read_at) && Date.parse(value.confirmed_at) >= Date.parse(value.read_at))
-    || typeof value.event_type !== 'string' || !/^task\.(create|edit|start|submit|review|cancel)$/.test(value.event_type)) throw invalid()
-  return { id: value.id, event_type: value.event_type, title: value.title, summary: value.summary, created_at: value.created_at, task_id: value.task_id,
-    task_title: value.task_title, object_version: value.object_version, current_object_version: value.current_object_version, is_current: value.is_current as boolean,
+    || typeof value.event_type !== 'string' || !/^(task\.(create|edit|start|submit|review|cancel)|plan\.(published|withdrawn)|call_sheet\.(published|review_required|withdrawn|superseded))$/.test(value.event_type)) throw invalid()
+  return { id: value.id, event_type: value.event_type, title: value.title, summary: value.summary, created_at: value.created_at, source_type: value.source_type as Notice['source_type'], source_id: value.source_id,
+    object_title: value.object_title, source_status: value.source_status as string, can_open_source: value.can_open_source, object_version: value.object_version, current_object_version: value.current_object_version, is_current: value.is_current as boolean,
     requires_confirmation: value.requires_confirmation, read_at: value.read_at, confirmed_at: value.confirmed_at }
 }
 
 export function createNotificationClient(http: HttpClient) {
   const path = (crewId: string) => `/crews/${checkedId(crewId)}/notifications`
   return {
+    ...createReceiptClient(http),
     async list(crewId: string, page = 1, filter: NoticeFilter = '', signal?: AbortSignal): Promise<Page<Notice>> {
       if (!Number.isInteger(page) || page < 1 || page > 100_000 || !['', 'unread', 'needs_acknowledgement'].includes(filter)) throw new AccountError('VALIDATION_ERROR')
       const data = await http.request(`${path(crewId)}?page=${page}&page_size=20${filter ? `&${filter}=true` : ''}`, { signal })

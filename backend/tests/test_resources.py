@@ -78,6 +78,7 @@ def test_patch_cannot_replace_manager_or_type_and_rejection_requires_a_real_reas
 
 
 def setup_repository(monkeypatch, *, permissions=None, roles=None, scope=None):
+    monkeypatch.setattr(module, "outstanding", AsyncMock(return_value=0))
     factory, session, transaction = fake_session_factory()
     person = CrewMember(id=uuid4(), crew_id=uuid4(), user_id=uuid4(), display_name="制片", status="active", joined_at=EPOCH, lock_version=1)
     actor = ResourceActor(person.id, frozenset(permissions if permissions is not None else {
@@ -95,10 +96,11 @@ def setup_repository(monkeypatch, *, permissions=None, roles=None, scope=None):
     monkeypatch.setattr(module, "permissions_for", AsyncMock(return_value={person.id: actor.permissions}))
     async def views(_session, rows, _actor):
         return [ResourceView(**{field: getattr(row, field) for field in ResourceView.model_fields if field not in {
-            "manager_display_name", "manager_lock_version", "review_ready", "allowed_actions"}},
+            "manager_display_name", "manager_lock_version", "review_ready", "allowed_actions", "custody_actions"}},
             manager_display_name=person.display_name, manager_lock_version=person.lock_version, review_ready=True, allowed_actions=["edit"]) for row in rows]
     monkeypatch.setattr(module, "resource_views", views)
     async def scalar(statement):
+        if 'shooting_plans' in str(statement): return False
         entity = statement.column_descriptions[0].get("entity")
         if entity is Resource: return resource
         if entity is Reservation: return booking
@@ -206,7 +208,7 @@ def test_cancellation_keeps_original_review_evidence_and_records_cancel_separate
     result = mutate(repo, person, "cancel", ReservationCancel(expected_lock_version=1, reason="改期"), reservation_id=booking.id)
     assert result.status == "cancelled" and result.reviewed_by == previous and result.reviewed_at == hour(-1)
     assert result.cancelled_by == person.id and result.cancel_reason == "改期"
-    assert result.dependency_check_status == "not_implemented"
+    assert result.dependency_check_status == "current_published_plans"
 
 
 @pytest.mark.parametrize("changes,code", [({"total_quantity": 1}, "RESOURCE_CAPACITY_CONFLICT"), ({"status": "disabled"}, "RESOURCE_IN_USE")])

@@ -21,7 +21,7 @@ RabbitMQ管理页：`http://127.0.0.1:15672`，用户名`silencio`，密码见�
 
 认证/邮件默认关闭。在Git忽略的`deploy/.env`中手动合并启用开关、私有`AUTH_SECRET`和独立`MAIL_PAYLOAD_KEY`后，按[邮件链路说明](../docs/development/mail-flow.md)启动`mail` profile并先迁移后受理。根目录`.env`不自动传入容器，不复制Qwen密钥。Mailpit页面为`http://127.0.0.1:8025`，仅截获测试邮件，含验证码，不得公开或用于真实收件。
 
-最新迁移为`0009_resources`，包括筹备任务、站内通知、本人档期及资源预约。档期排斥约束需要`btree_gist`，迁移角色须有相应扩展创建权限；实际安装及数据库执行尚未验证。任务站内通知采用独立的PostgreSQL事务消费进程，资源事件尚未接入该消费者；邮件Worker不投递这些事件。日后迁移并联调时显式运行：
+最新迁移为`0024_impact_history`，包括筹备任务、站内通知、本人档期、资源预约、借还、库存账本、剧本文本版本、场戏拆解、文字分镜、人物及资源需求关联，以及计划草稿、正式版本指针、检查凭证和发布事件，以及通告版本、接收集合、审核快照、待处理事件及剧本私有源文件引用及场地资料／照片元数据。发布及通告状态事件已接入统一站内通知消费者；需显式运行，不通过邮件Worker发送。档期排斥约束需要`btree_gist`，迁移角色须有相应扩展创建权限；实际安装及数据库执行尚未验证。任务、排期与通告站内通知采用独立的PostgreSQL事务消费进程，资源事件尚未接入该消费者；邮件Worker不投递这些事件。日后迁移并联调时显式运行：
 
 ```powershell
 docker compose --env-file deploy/.env.example -f deploy/compose.yaml --profile notifications up -d --build notification-consumer
@@ -30,3 +30,13 @@ docker compose --env-file deploy/.env.example -f deploy/compose.yaml --profile n
 实际启用认证的环境使用已有的私有`deploy/.env`及相同连接配置，不覆盖该文件。此profile尚未实际运行联调，运行边界见[通知与交接说明](../docs/development/notifications-and-handover.md)。邀请邮件链接采用`INVITATION_PUBLIC_ORIGIN`，默认`http://127.0.0.1:5173`，须与认证允许来源对应且不带路径。Mailpit中的邀请链接也是敏感数据。详见[邀请链路说明](../docs/development/invitations.md)。
 
 首次构建需下载镜像与依赖。Docker引擎须先启动；`config --quiet`只验证Compose解析，不能证明镜像可拉取、容器可启动或服务已联通。
+
+人物与演员绑定及排期／通告复核联动已接入，规则、权限及边界见[选角实现说明](../docs/development/character-casting.md)。
+
+正式排期撤回、关联通告失效及发布通知回执管理已接入，见[撤回与回执说明](../docs/development/plan-withdrawal-and-receipts.md)。
+
+剧本来源变更清单、场戏／分镜适用性复核及排期检查衔接已接入，范围和当前限制见[来源复核说明](../docs/development/source-applicability.md)。
+
+总览中的统一变更待处理清单及资料／排期／通告定位已接入，不新增数据库迁移，见[变更工作台说明](../docs/development/change-workbench.md)。
+
+显式变更检查、持久问题及观察历史已接入，新增迁移`0024_impact_history`；普通刷新保持只读。规则和异步边界见[问题历史说明](../docs/development/impact-history.md)。

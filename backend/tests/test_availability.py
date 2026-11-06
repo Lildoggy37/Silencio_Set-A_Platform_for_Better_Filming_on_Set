@@ -66,7 +66,7 @@ def test_partial_replacement_preserves_both_external_fragments_and_leaves_inner_
     assert [(item.starts_at, item.ends_at) for item in result] == [(hour(8), hour(10)), (hour(11), hour(12)), (hour(14), hour(16))]
     person = member(); view = calendar_view(person, collection(person), body().intervals, body())
     assert [(item.starts_at, item.ends_at) for item in view.unregistered] == [(hour(10), hour(11)), (hour(12), hour(14))]
-    assert view.plan_review_status == "not_implemented"
+    assert view.plan_review_status == "current_published_plans"
 
 
 def test_range_replacement_invariants_hold_for_many_boundary_and_status_combinations():
@@ -101,7 +101,7 @@ def replace_fixture(monkeypatch, *, legacy=False, absent=False):
     session.scalar.side_effect = [person, head, hour(0)] + ([] if legacy or absent else [1])
     row = MemberAvailability(id=uuid4(), crew_id=person.crew_id, member_id=person.id,
         starts_at=hour(8), ends_at=hour(16), availability="available", lock_version=1)
-    session.scalars.return_value = Mock(all=Mock(return_value=[row]))
+    session.scalars.side_effect = lambda query: Mock(all=Mock(return_value=[] if 'shooting_plan_versions' in str(query) else [row]))
     return factory, session, transaction, person, head, row
 
 
@@ -128,7 +128,7 @@ def test_first_write_or_new_membership_clears_only_its_own_old_rows(monkeypatch,
     assert result.lock_version == 2
     deletion = str(session.execute.call_args.args[0])
     assert "member_id =" in deletion and "crew_id =" in deletion and "starts_at <" not in deletion
-    session.scalars.assert_not_awaited()
+    assert all('shooting_plan_versions' in str(call.args[0]) for call in session.scalars.await_args_list)
 
 
 @pytest.mark.parametrize("change,code", [("epoch", "MEMBERSHIP_CHANGED"), ("version", "VERSION_CONFLICT"), ("exhausted", "VERSION_EXHAUSTED")])

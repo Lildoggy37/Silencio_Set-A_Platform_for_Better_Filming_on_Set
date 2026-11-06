@@ -30,7 +30,7 @@ def task_row(**changes):
     now = datetime.now(UTC)
     return Task(**({"id": uuid4(), "crew_id": uuid4(), "title": "准备分镜", "description": None,
         "owner_member_id": uuid4(), "reviewer_member_id": uuid4(), "created_by_member_id": uuid4(),
-        "status": "pending", "due_at": now + timedelta(days=1), "lock_version": 1,
+        "requires_review": True, "status": "pending", "due_at": now + timedelta(days=1), "lock_version": 1,
         "created_at": now, "updated_at": now, "cancel_reason": None} | changes))
 
 

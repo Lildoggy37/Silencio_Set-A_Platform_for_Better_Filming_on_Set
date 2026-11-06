@@ -31,7 +31,7 @@ async def run(settings, once=False):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Create in-app notifications from committed task events")
+    parser = argparse.ArgumentParser(description="Create in-app notifications from task, plan and call sheet events")
     parser.add_argument("--once", action="store_true", help="Process at most one event and exit")
     arguments = parser.parse_args()
     settings = load_settings()

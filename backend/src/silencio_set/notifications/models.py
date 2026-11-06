@@ -13,14 +13,21 @@ class Notification(Base):
         UniqueConstraint("crew_id", "id", name="uq_notifications_crew_id_id"),
         UniqueConstraint("crew_id", "event_key", name="uq_notifications_crew_event"),
         UniqueConstraint("source_event_id", name="uq_notifications_source_event"),
+        UniqueConstraint("plan_event_id", name="uq_notifications_plan_event"),
+        UniqueConstraint("call_sheet_event_id", name="uq_notifications_call_sheet_event"),
         ForeignKeyConstraint(["crew_id", "source_event_id"], ["task_change_events.crew_id", "task_change_events.id"], ondelete="RESTRICT"),
+        ForeignKeyConstraint(["crew_id", "plan_event_id"], ["plan_publication_events.crew_id", "plan_publication_events.id"], ondelete="RESTRICT", name="fk_notifications_plan_event"),
+        ForeignKeyConstraint(["crew_id", "call_sheet_event_id"], ["call_sheet_events.crew_id", "call_sheet_events.id"], ondelete="RESTRICT", name="fk_notifications_call_sheet_event"),
+        CheckConstraint("num_nonnulls(source_event_id, plan_event_id, call_sheet_event_id) = 1", name="one_source"),
         CheckConstraint("char_length(title) BETWEEN 1 AND 100", name="title_valid"),
         CheckConstraint("char_length(summary) BETWEEN 1 AND 2000", name="summary_valid"),
         Index("ix_notifications_crew_created", "crew_id", "created_at", "id"),
     )
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     crew_id: Mapped[UUID]
-    source_event_id: Mapped[UUID]
+    source_event_id: Mapped[UUID | None]
+    plan_event_id: Mapped[UUID | None]
+    call_sheet_event_id: Mapped[UUID | None]
     event_key: Mapped[str] = mapped_column(String(100))
     event_type: Mapped[str] = mapped_column(String(50))
     title: Mapped[str] = mapped_column(String(100))

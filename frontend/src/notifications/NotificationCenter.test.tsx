@@ -13,8 +13,8 @@ const noticeId = '55555555-5555-4555-8555-555555555555'
 const user = { id: userId, email: 'director@example.com', display_name: '导演', profile_completed: true, missing_fields: [], lock_version: 2 }
 const member = { id: memberId, display_name: '导演', status: 'active', role_codes: ['admin', 'director'], lock_version: 1 }
 const crew = { id: crewId, name: '学生剧组', project_name: '雨停之前', description: null, created_at: '2026-10-25T00:00:00Z', membership: member, permissions: ['crew.read', 'member.read', 'task.read', 'task.manage'] }
-const notice = { id: noticeId, event_type: 'task.create', title: '收到新任务', summary: '请核对任务安排', task_id: taskId, task_title: '走廊分镜', created_at: '2026-10-28T00:00:00Z',
-  object_version: 1, current_object_version: 1, is_current: true, requires_confirmation: true, read_at: null as string | null, confirmed_at: null as string | null }
+const notice = { id: noticeId, event_type: 'task.create', title: '收到新任务', summary: '请核对任务安排', source_type: 'task', source_id: taskId, object_title: '走廊分镜', created_at: '2026-10-28T00:00:00Z',
+  object_version: 1, current_object_version: 1, is_current: true, source_status: 'current', can_open_source: true, requires_confirmation: true, read_at: null as string | null, confirmed_at: null as string | null }
 const ok = (data: unknown) => new Response(JSON.stringify({ data }), { status: 200 })
 const fail = (code: string, status: number) => new Response(JSON.stringify({ error: { code } }), { status })
 
@@ -36,11 +36,11 @@ function start(handler: (path: string, options?: RequestInit) => Response | Prom
 async function selectCrew() {
   fireEvent.click(await screen.findByRole('button', { name: '选择或创建剧组' }))
   fireEvent.click(await screen.findByRole('button', { name: '学生剧组 · 雨停之前' }))
-  await screen.findByText('学生剧组 · 雨停之前')
+  await screen.findByText('《雨停之前》', { selector: '.project-context strong' })
 }
-async function openNotice() {
+async function openNotice(name: RegExp = /收到新任务 · 走廊分镜/) {
   await selectCrew(); fireEvent.click(screen.getByRole('button', { name: '通知' }))
-  fireEvent.click(await screen.findByRole('button', { name: /收到新任务 · 走廊分镜/ }))
+  fireEvent.click(await screen.findByRole('button', { name }))
   await screen.findByRole('button', { name: '标记已读' })
 }
 
@@ -67,7 +67,7 @@ test('opening a notification does not confirm it; read and explicit acknowledgem
 })
 
 test('outdated notification stays readable but cannot confirm a superseded task version', async () => {
-  const old = { ...notice, is_current: false, current_object_version: 2 }
+  const old = { ...notice, is_current: false, source_status: 'updated', current_object_version: 2 }
   const fetcher = start(path => path.includes('/notifications?') ? ok({ items: [old], total: 1, page: 1, page_size: 20 }) : ok(old))
   await openNotice()
   expect(screen.queryByRole('button', { name: '确认知悉' })).toBeNull()
@@ -86,6 +86,46 @@ test('notification refresh denial removes private notice content', async () => {
   expect(screen.queryByRole('button', { name: '查看当前任务' })).toBeNull()
 })
 
+test('plan notification opens its referenced version without marking read or acknowledging', async () => {
+  const item = { ...notice, event_type: 'plan.published', source_type: 'plan', object_title: '首日计划', title: '正式拍摄排期已发布' }
+  const fetcher = start(path => {
+    if (path.includes('/notifications?')) return ok({ items: [item], total: 1, page: 1, page_size: 20 })
+    if (path.includes('/plan-versions/')) return ok({ id: taskId, version_no: 2, review_reasons: [], sessions: [{ id: 'scene', scene_label: '02 · 走廊重逢', starts_at: '2026-11-02T01:00:00Z', ends_at: '2026-11-02T02:00:00Z', location_name: '教学楼', members: [{ display_name: '林雨' }] }] })
+    return ok(item)
+  })
+  await openNotice(/正式拍摄排期已发布 · 首日计划/)
+  fireEvent.click(screen.getByRole('button', { name: '查看通知对应排期' }))
+  expect(await screen.findByText('02 · 走廊重逢')).toBeTruthy()
+  expect(screen.getByText('教学楼')).toBeTruthy()
+  expect(fetcher.mock.calls.some(([path]) => path.endsWith('/read') || path.endsWith('/acknowledge'))).toBe(false)
+})
+
+test('withdrawn call sheet stays readable but cannot be acknowledged even when version numbers match', async () => {
+  const item = { ...notice, event_type: 'call_sheet.published', source_type: 'call_sheet', object_title: '2026-11-02 通告', title: '每日通告已发布', source_status: 'withdrawn', is_current: false }
+  const fetcher = start(path => {
+    if (path.includes('/notifications?')) return ok({ items: [item], total: 1, page: 1, page_size: 20 })
+    if (path.includes('/call-sheet-versions/')) return ok({ validity_status: 'withdrawn', source_current: false, gathering_at: '2026-11-02T00:00:00Z', gathering_location: '东门', contact_note: null, notes: '携带雨具',
+      arrangement_snapshot: { project_name: '雨停之前', shooting_date: '2026-11-02', plan_name: '首日计划', plan_version_no: 1, sessions: [], overnight_continuations: [] } })
+    return ok(item)
+  })
+  await openNotice(/每日通告已发布 · 2026-11-02 通告/)
+  expect(screen.queryByRole('button', { name: '确认知悉' })).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: '查看通知对应通告' }))
+  expect(await screen.findByText('此通告已非当前有效安排，请核对最新通告。')).toBeTruthy()
+  expect(screen.getByText('注意事项：携带雨具')).toBeTruthy()
+  expect(fetcher.mock.calls.some(([path]) => path.endsWith('/acknowledge'))).toBe(false)
+})
+
+test('removed plan participant receives a change notice without access to the new source', async () => {
+  const item = { ...notice, event_type: 'plan.published', source_type: 'plan', object_title: '拍摄安排', title: '正式拍摄排期已发布', requires_confirmation: false, can_open_source: false }
+  const fetcher = start(path => path.includes('/notifications?') ? ok({ items: [item], total: 1, page: 1, page_size: 20 }) : ok(item))
+  await openNotice(/正式拍摄排期已发布 · 拍摄安排/)
+  expect(screen.getByText('当前未获该版本的内容查看权限，请联系制片核对本人安排。')).toBeTruthy()
+  expect(screen.queryByRole('button', { name: '查看通知对应排期' })).toBeNull()
+  expect(screen.queryByRole('button', { name: '确认知悉' })).toBeNull()
+  expect(fetcher.mock.calls.some(([path]) => path.includes('/plan-versions/'))).toBe(false)
+})
+
 test('exit preview blocks submission and links only visible responsibilities to the actual task', async () => {
   const fetcher = start(path => {
     if (path.includes('/exit-responsibilities?')) return ok({ member_id: memberId, member_lock_version: 1, items: [{ id: taskId, title: '走廊分镜', status: 'in_progress', due_at: '2099-01-01T00:00:00Z', lock_version: 2, is_owner: true, is_reviewer: false }],
@@ -95,7 +135,7 @@ test('exit preview blocks submission and links only visible responsibilities to 
       created_at: '2026-10-28T00:00:00Z', updated_at: '2026-10-28T00:00:00Z', allowed_actions: ['submit'] }, member_names: { [memberId]: '导演' }, current_submission: null, submission_count: 0 })
     throw new Error('Unexpected request')
   })
-  await selectCrew(); fireEvent.click(screen.getByRole('button', { name: '退出当前剧组' }))
+  await selectCrew(); fireEvent.click(screen.getByRole('button', { name: '剧组设置' })); fireEvent.click(await screen.findByRole('menuitem', { name: '退出当前剧组' }))
   const open = await screen.findByRole('button', { name: '处理任务：走廊分镜' })
   expect(screen.getByRole('button', { name: '确认退出剧组' }).hasAttribute('disabled')).toBe(true)
   expect(screen.getByText(/1 项任务超出你的查看范围/)).toBeTruthy()
@@ -106,7 +146,7 @@ test('exit preview blocks submission and links only visible responsibilities to 
 
 test('failed responsibility check cannot be treated as no remaining work', async () => {
   start(path => path.includes('/exit-responsibilities?') ? fail('SERVICE_UNAVAILABLE', 503) : ok({}))
-  await selectCrew(); fireEvent.click(screen.getByRole('button', { name: '退出当前剧组' }))
+  await selectCrew(); fireEvent.click(screen.getByRole('button', { name: '剧组设置' })); fireEvent.click(await screen.findByRole('menuitem', { name: '退出当前剧组' }))
   await screen.findByText('API暂不可用，请检查本地服务是否已启动。')
   expect(screen.getByRole('button', { name: '确认退出剧组' }).hasAttribute('disabled')).toBe(true)
 })

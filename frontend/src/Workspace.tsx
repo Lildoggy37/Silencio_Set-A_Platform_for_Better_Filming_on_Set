@@ -6,12 +6,17 @@ import type { Dependencies, DependencyStatus } from './api/health'
 import type { User } from './api/accounts'
 import { useAuth } from './auth/AuthProvider'
 import { ErrorNotice } from './auth/AccountScreens'
-import { CrewPicker, MemberDirectory, useBusinessSession } from './crews/CrewScreens'
+import { CrewPicker, CrewSwitchMenu, MemberDirectory, useBusinessSession } from './crews/CrewScreens'
 import { MemberExitDialog } from './crews/MemberExitDialog'
 import { TaskBoard } from './tasks/TaskBoard'
 import { NotificationCenter } from './notifications/NotificationCenter'
 import { AvailabilityPanel } from './availability/AvailabilityPanel'
 import { ResourceBoard } from './resources/ResourceBoard'
+import { ScriptLibrary } from './scripts/ScriptLibrary'
+import { PlanBoard } from './plans/PlanBoard'
+import { ChangeWorkbench } from './changes/ChangeWorkbench'
+import type { PlanTarget } from './api/changes'
+import { DianeLauncher } from './diane/DianeLauncher'
 
 const tabs = ['总览', '排期', '资源', '成员'] as const
 type Tab = typeof tabs[number]
@@ -70,22 +75,34 @@ export default function Workspace({ user, preview, onAccount, initialCrewId }: {
   const [leaving, setLeaving] = useState(false)
   const [taskToOpen, setTaskToOpen] = useState<string | null>(null)
   const [resourceToOpen, setResourceToOpen] = useState<string | null>(null)
+  const [resourceType, setResourceType] = useState<string | undefined>()
+  const [planTarget, setPlanTarget] = useState<(PlanTarget & { key: string }) | null>(null)
+  const [scriptTarget, setScriptTarget] = useState<{ id: string; key: string } | null>(null)
   const [calendar, setCalendar] = useState<'own' | 'crew' | null>(null)
   const cache = useQueryClient()
   const [crewId, setCrewId] = useState<string | null>(initialCrewId ?? null)
-  const { crews } = useAuth()
+  const { crews, plans } = useAuth()
   const detail = useQuery({ queryKey: ['crews', user?.id, crewId, 'detail'], queryFn: ({ signal }) => crews.get(crewId!, signal), enabled: !preview && !!user && crewId !== null, retry: false })
   useBusinessSession(detail.error)
   const selected = detail.isError ? undefined : detail.data
+  const nextShoot = useQuery({ queryKey: ['crews', user?.id, crewId, 'next-shoot'], queryFn: ({ signal }) => plans.next(crewId!, signal), enabled: !preview && !!selected && selected.permissions.some(code => ['plan.read_all', 'plan.edit', 'plan.read_related'].includes(code)), retry: false })
+  useBusinessSession(nextShoot.error)
+  const shoot = nextShoot.isError ? undefined : nextShoot.data
+  const shootDate = shoot ? new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit' }).format(new Date(shoot.starts_at)).replace('/', '.') : null
   const openTask = (id: string) => { setLeaving(false); setDialog(null); setTab('总览'); setTaskToOpen(id) }
-  const openResource = (id: string) => { setLeaving(false); setDialog(null); setTab('资源'); setResourceToOpen(id) }
+  const openResource = (id: string, type?: string) => { setResourceType(type); setLeaving(false); setDialog(null); setTab('资源'); setResourceToOpen(id) }
+  const openPlan = (target: PlanTarget) => { setLeaving(false); setDialog(null); setPlanTarget({ ...target, key: crypto.randomUUID() }); setTab('排期') }
+  const openScript = (id: string) => { setScriptTarget({ id, key: crypto.randomUUID() }); setDialog('项目资料') }
+
+  const chooseCrew = (id: string) => { setLeaving(false); setTaskToOpen(null); setResourceToOpen(null); setDialog(null); setCalendar(null); setPlanTarget(null); setScriptTarget(null); setCrewId(id) }
 
   return <>
+
     <a className="skip-link" href="#main">跳转到内容</a>
     <header className="topbar">
       <div className="identity"><span className="monogram">SS</span><span>Silencio Set<small>寂静片场</small></span></div>
       {preview ? <div className="project-switch"><span>当前项目</span><strong>尚未选择剧组</strong></div>
-        : <button type="button" className="project-switch" aria-label="切换剧组" onClick={() => setPicker(true)}><span>当前项目 · 切换剧组</span><strong>{selected?.project_name ?? '尚未选择剧组'}</strong></button>}
+        : <CrewSwitchMenu userId={user!.id} currentCrewId={crewId ?? undefined} onSelect={chooseCrew} onBrowse={() => setPicker(true)}><button type="button" className="project-switch" aria-label="切换剧组"><span>{selected?.name ?? '当前项目 · 切换剧组'}</span><strong>{selected ? `《${selected.project_name}》` : '尚未选择剧组'}</strong></button></CrewSwitchMenu>}
       <nav aria-label="主要导航">{tabs.map(name => <button key={name} type="button" aria-pressed={tab === name} onClick={() => setTab(name)}>{name}</button>)}</nav>
       <div className="utilities">
         <button type="button" aria-label="项目资料" onClick={() => setDialog('项目资料')}><UtilityIcon kind="folder" /></button>
@@ -99,19 +116,28 @@ export default function Workspace({ user, preview, onAccount, initialCrewId }: {
       <div className="workspace-grid">
         <aside className="shoot-panel" aria-labelledby="shoot-title">
           <span className="eyebrow">NEXT SHOOT</span><h2 id="shoot-title">下一次拍摄</h2>
-          <p className="shoot-day">待安排</p><span className="shoot-day-caption">尚无已发布拍摄日</span>
-          <div className="shoot-empty"><hr /><p>集合待定</p><span>接入剧组与排期后显示集合时间及地点</span></div>
+          <p className="shoot-day" data-empty={!shoot}>{shootDate ?? (nextShoot.isError ? '读取失败' : selected && nextShoot.isFetching ? '读取中' : '待安排')}</p><span className="shoot-day-caption">{shoot ? new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', weekday: 'long' }).format(new Date(shoot.starts_at)) : nextShoot.isError ? '请重新读取排期' : '尚无可展示的已发布拍摄日'}</span>
+          <div className="shoot-empty"><hr /><p>{shoot ? new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(shoot.starts_at)) : '拍摄时间待定'}</p><span>{shoot ? `${shoot.location_name} · ${shoot.scene_label}` : '发布排期后显示拍摄时间及场地'}</span>{shoot && shoot.review_reasons.length > 0 && <p>排期待复核</p>}{nextShoot.isError && <Button onClick={() => { void nextShoot.refetch() }}>重新读取排期</Button>}</div>
+    {selected && <DianeLauncher key={`${user!.id}-${selected.id}`} crewId={selected.id} userId={user!.id} crewName={selected.name} projectName={selected.project_name} canManage={selected.permissions.includes('task.manage')} selfMemberId={selected.membership.id} onSource={source => {
+      if (source.kind === 'task' && source.record_id) openTask(source.record_id)
+      else if (source.kind === 'resource' && source.record_id) openResource(source.record_id)
+      else if (source.kind === 'resources') setTab('资源')
+      else if (source.kind === 'plans') setTab('排期')
+      else if (source.kind === 'availability') setCalendar('crew')
+      else setTab('总览')
+    }} />}
           <span className="shoot-footer">拍摄信息随已发布安排更新</span>
         </aside>
         <div className="workspace-content">
-          <div className="page-heading"><div><p className="eyebrow">CREW WORKSPACE / {String(tabs.indexOf(tab) + 1).padStart(2, '0')}</p><h1>{titles[tab]}</h1>{selected && <p className="caption">{selected.name} · {selected.project_name}</p>}</div>
-            {preview ? <span className="preview-label">只读布局预览 · 不代表已登录</span> : <div className="member-actions"><Button onClick={() => setPicker(true)}>{selected ? '选择其他剧组' : '选择或创建剧组'}</Button>{selected && <Button onClick={() => setLeaving(true)}>退出当前剧组</Button>}</div>}
+          <div className="page-heading"><div><h1>{titles[tab]}</h1>{selected && <div className="project-context"><span>{selected.name}</span><strong>《{selected.project_name}》</strong></div>}</div>
+            {preview ? <span className="preview-label">只读布局预览 · 不代表已登录</span> : selected ? <CrewSwitchMenu userId={user!.id} currentCrewId={selected.id} onSelect={chooseCrew} onBrowse={() => setPicker(true)} onLeave={() => setLeaving(true)}><Button aria-label="剧组设置">剧组设置</Button></CrewSwitchMenu> : <Button onClick={() => setPicker(true)}>选择或创建剧组</Button>}
           </div>
           {!preview && detail.error && <><ErrorNotice error={detail.error} /><Button onClick={() => { void detail.refetch() }}>重新读取剧组</Button></>}
           {!preview && crewId && detail.isPending && <p role="status">正在确认剧组访问权限…</p>}
         <section className="module-panel" aria-labelledby="module-title">
-          <div className="section-heading"><h2 id="module-title">{tab === '总览' ? '剧组工作台' : `${tab}工作区`}</h2><span className="caption">{selected ? '当前剧组' : preview ? '只读布局' : '请选择剧组'}</span></div>
-          {selected && (tab === '成员' || tab === '排期') && <div className="member-actions">
+          <div className="section-heading sr-only"><h2 id="module-title">{tab === '总览' ? '剧组工作台' : `${tab}工作区`}</h2><span className="caption">{selected ? '当前剧组' : preview ? '只读布局' : '请选择剧组'}</span></div>
+          {selected && tab === '总览' && <ChangeWorkbench selfMemberId={selected.membership.id} key={selected.id} crewId={selected.id} userId={user!.id} permissions={selected.permissions} onOpenPlan={openPlan} onOpenScript={openScript} />}
+          {selected && (tab === '成员' || tab === '排期') && <div className="workspace-tools" aria-label="档期工具">
             {selected.permissions.includes('availability.self') && <Button onClick={() => setCalendar('own')}>我的档期</Button>}
             {selected.permissions.includes('availability.read_all') && <Button onClick={() => setCalendar('crew')}>剧组档期</Button>}
           </div>}
@@ -119,22 +145,23 @@ export default function Workspace({ user, preview, onAccount, initialCrewId }: {
             ? <MemberDirectory key={selected.id} userId={user!.id} crewId={selected.id} selfMemberId={selected.membership.id} canAuthorize={selected.permissions.includes('member.authorize')} canInvite={selected.permissions.includes('member.invite')} canRemove={selected.permissions.includes('member.remove')} onOpenTask={openTask} onOpenResource={openResource} onAccessChanged={async () => { await detail.refetch() }} />
             : <p className="module-note">当前没有查看成员目录的权限。</p> : <>
           {tab === '资源' && selected ? selected.permissions.includes('resource.read')
-            ? <ResourceBoard key={selected.id} crewId={selected.id} userId={user!.id} self={selected.membership} canCreate={selected.membership.role_codes.includes('producer') && selected.permissions.includes('resource.manage')} openResourceId={resourceToOpen} onResourceOpened={() => setResourceToOpen(null)} />
+            ? <ResourceBoard key={selected.id} crewId={selected.id} userId={user!.id} self={selected.membership} canCreate={selected.membership.role_codes.includes('producer') && selected.permissions.includes('resource.manage')} openResourceId={resourceToOpen} openResourceType={resourceType} onResourceOpened={() => setResourceToOpen(null)} />
             : <p className="module-note">当前没有查看资源的权限。</p>
             : tab === '总览' && selected ? selected.permissions.some(code => ['task.read', 'task.manage'].includes(code))
             ? <TaskBoard key={selected.id} crewId={selected.id} userId={user!.id} canManage={selected.permissions.includes('task.manage')} openTaskId={taskToOpen} onTaskOpened={() => setTaskToOpen(null)} />
             : <p className="module-note">当前没有查看任务的权限。</p>
-            : <div className="empty-state"><span className="empty-mark" aria-hidden="true">+</span><h3>{tab === '排期' && selected ? '拍摄计划尚未接入' : `${tab}模块尚未接入`}</h3><p>{descriptions[tab]}</p><p className="caption">{preview ? '这是只读布局预览，不代表已登录，不读取剧组或任务数据。' : selected ? '成员档期已提供；拍摄计划和资源管理仍在开发，此处不会展示演示业务数据。' : '请先选择或创建剧组，再进入剧组功能。'}</p></div>}
-          {tab === '排期' && <div className="module-note">通告单属于排期工作流，不单独占用一级导航。</div>}
-          {tab === '成员' && <div className="module-note">个人档期由本人维护，不提供代改其他成员档期的入口。</div>}
+            : tab === '排期' && selected ? selected.permissions.some(code => ['plan.read_all', 'plan.edit', 'plan.read_related'].includes(code))
+            ? <PlanBoard key={`${selected.id}-${planTarget?.key ?? "default"}`} crewId={selected.id} userId={user!.id} permissions={selected.permissions} initialTarget={planTarget ?? undefined} />
+            : <p className="module-note">当前没有查看拍摄排期的权限，请联系制片核对本人安排。</p>
+            : <div className="empty-state"><span className="empty-mark" aria-hidden="true">+</span><h3>{preview ? '剧组工作区布局预览' : '请选择要进入的剧组'}</h3><p>{descriptions[tab]}</p><p className="caption">{preview ? '这是只读布局预览，不代表已登录，不读取剧组或任务数据。' : '请先选择或创建剧组，再进入剧组功能。'}</p></div>}
           </>}
         </section>
         </div>
       </div>
-      <ServiceStatus />
-      <footer className="page-footer"><span>SILENCIO SET / LOCAL DEVELOPMENT</span><span>Diane智能辅助将在基础业务完成后接入</span></footer>
+      <details className="system-details"><summary>服务连接状态</summary><ServiceStatus /></details>
+      <footer className="page-footer"><span>SILENCIO SET / LOCAL DEVELOPMENT</span><span>Silencio Set · 筹备协作</span></footer>
     </main>
-    {user && !preview && <CrewPicker open={picker} userId={user.id} onClose={() => setPicker(false)} onSelect={id => { setLeaving(false); setTaskToOpen(null); setResourceToOpen(null); setDialog(null); setCalendar(null); setCrewId(id) }} />}
+    {user && !preview && <CrewPicker open={picker} userId={user.id} currentCrewId={crewId ?? undefined} onClose={() => setPicker(false)} onSelect={chooseCrew} />}
     {calendar && selected && <AvailabilityPanel key={`${selected.id}-${calendar}`} crewId={selected.id} userId={user!.id} selfMemberId={selected.membership.id} mode={calendar} onClose={() => setCalendar(null)} />}
     {leaving && selected && <MemberExitDialog key={selected.id} crewId={selected.id} member={selected.membership} removing={false} onClose={() => setLeaving(false)} onOpenTask={openTask} onOpenResource={openResource}
       onReload={async () => {
@@ -153,9 +180,11 @@ export default function Workspace({ user, preview, onAccount, initialCrewId }: {
         await cache.invalidateQueries({ queryKey: ['crews', user?.id, 'list'] })
       }} />}
     {dialog === '通知' && selected && <NotificationCenter key={selected.id} crewId={selected.id} userId={user!.id} onClose={() => setDialog(null)} onOpenTask={openTask} />}
-    <Modal title={dialog} open={dialog === '项目资料' || dialog === '通知' && !selected} onCancel={() => setDialog(null)} footer={<Button onClick={() => setDialog(null)}>关闭</Button>}>
-      <p>{dialog === '项目资料' ? '这里将提供剧本、场戏与文字分镜入口。当前未接入资料接口。'
-        : '请先选择剧组，再查看属于你的剧组通知。'}</p>
+    <Modal title={dialog} open={dialog === '项目资料' || dialog === '通知' && !selected} width={1000} onCancel={() => setDialog(null)} footer={<Button onClick={() => setDialog(null)}>关闭</Button>}>
+      {dialog === '项目资料' && selected ? selected.permissions.includes('script.read')
+        ? <ScriptLibrary selfMemberId={selected.membership.id} key={`${selected.id}-${scriptTarget?.key ?? "default"}`} crewId={selected.id} userId={user!.id} permissions={selected.permissions} initialScriptId={scriptTarget?.id} />
+        : <p>当前没有查看剧本资料的权限。</p>
+        : <p>{dialog === '项目资料' ? '请先选择剧组，再查看项目资料。' : '请先选择剧组，再查看属于你的剧组通知。'}</p>}
     </Modal>
   </>
 }

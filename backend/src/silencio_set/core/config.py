@@ -2,7 +2,7 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
 
-from pydantic import Field, SecretStr, ValidationError, field_validator, model_validator
+from pydantic import AliasChoices, Field, SecretStr, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from cryptography.fernet import Fernet
 
@@ -21,6 +21,9 @@ ENV_FILE = PROJECT_ROOT / ".env" if PROJECT_ROOT is not None else None
 
 
 class Settings(BaseSettings):
+    location_photo_storage_root: Path = (PROJECT_ROOT if PROJECT_ROOT is not None else Path.cwd()) / 'runtime' / 'private-location-photos'
+    script_storage_root: Path = (PROJECT_ROOT if PROJECT_ROOT is not None else Path.cwd()) / 'runtime' / 'private-script-files'
+    plan_preflight_ttl_seconds: int = Field(default=600, ge=60, le=3600)
     model_config = SettingsConfigDict(
         env_file=ENV_FILE,
         env_file_encoding="utf-8",
@@ -34,6 +37,17 @@ class Settings(BaseSettings):
     redis_url: SecretStr | None = None
     celery_broker_url: SecretStr | None = None
     diane_enabled: bool = False
+    diane_background_enabled: bool = False
+    llm_api_key: SecretStr | None = Field(default=None, repr=False, validation_alias=AliasChoices('LLM_API_KEY', 'QWEN_API_KEY', 'DASHSCOPE_API_KEY', 'llm_api_key'))
+    llm_base_url: str | None = Field(default=None, validation_alias=AliasChoices('LLM_BASE_URL', 'QWEN_BASE_URL', 'llm_base_url'))
+    llm_model: str | None = Field(default=None, validation_alias=AliasChoices('LLM_MODEL', 'QWEN_MODEL', 'llm_model'))
+    diane_timeout_seconds: int = Field(default=60, ge=5, le=120)
+    diane_max_model_calls: int = Field(default=4, ge=1, le=8)
+    diane_max_tool_calls: int = Field(default=8, ge=1, le=20)
+    diane_max_output_tokens: int = Field(default=1500, ge=256, le=4096)
+    diane_token_budget: int = Field(default=32000, ge=4096, le=100000)
+    diane_max_context_bytes: int = Field(default=48000, ge=4096, le=128000)
+    diane_concurrency: int = Field(default=2, ge=1, le=8)
     auth_enabled: bool = False
     auth_secret: SecretStr | None = None
     auth_allowed_origins: tuple[str, ...] = (
@@ -177,10 +191,26 @@ class Settings(BaseSettings):
         return value
 
     @model_validator(mode="after")
-    def reject_unimplemented_agent(self):
-        if self.diane_enabled:
-            raise ValueError("Diane is not implemented in this development milestone")
+    def check_diane_configuration(self):
+        if self.diane_background_enabled and (not self.diane_enabled or not self.celery_broker_url):
+            raise ValueError('Background Diane requires DIANE_ENABLED and CELERY_BROKER_URL')
+        if self.diane_enabled and (not self.auth_enabled or not self.llm_api_key or not self.llm_base_url or not self.llm_model):
+            raise ValueError("Diane requires authentication, LLM_API_KEY, LLM_BASE_URL and LLM_MODEL")
         return self
+
+    @field_validator('llm_api_key', 'llm_base_url', 'llm_model', mode='before')
+    @classmethod
+    def empty_model_setting(cls, value):
+        return None if value == '' else value
+
+    @field_validator('llm_base_url')
+    @classmethod
+    def model_endpoint(cls, value):
+        if value is None: return value
+        url = urlsplit(value)
+        if url.scheme != 'https' or not url.hostname or url.username or url.password or url.query or url.fragment:
+            raise ValueError('LLM_BASE_URL requires an HTTPS API endpoint without credentials or query parameters')
+        return value.rstrip('/')
 
 
 def load_settings(*, env_file: Path | None = ENV_FILE) -> Settings:

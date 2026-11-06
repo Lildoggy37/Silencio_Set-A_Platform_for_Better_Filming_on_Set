@@ -1,18 +1,22 @@
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import func, literal, select, union_all
 
 from silencio_set.accounts.errors import AuthError
 from silencio_set.crews.models import AuditLog, Crew, CrewMember
 from silencio_set.accounts.models import User
 from silencio_set.crews.repository import not_found
 from silencio_set.notifications.models import Notification, NotificationRecipient
-from silencio_set.notifications.schemas import NotificationPage, NotificationView
+from silencio_set.notifications.schemas import NotificationPage
+from silencio_set.notifications.queries import notification_query, view, current_condition
+from silencio_set.notifications.publications import consume_publication
+from silencio_set.plans.models import PlanPublicationEvent
+from silencio_set.call_sheets.models import CallSheetEvent
 from silencio_set.tasks.models import Task, TaskChangeEvent
-from silencio_set.tasks.repository import TaskActor, collaborators_for, permissions_for, require_permission, task_actor, visible_tasks
+from silencio_set.tasks.repository import collaborators_for, permissions_for, require_permission, task_actor
 
 EVENT_TITLES = {"create": "收到新的筹备任务", "edit": "任务安排已调整", "start": "任务已开始",
-    "submit": "任务成果已提交", "review": "任务验收有更新", "cancel": "任务已取消"}
+    "submit": "任务成果已提交", "complete": "任务已完成", "review": "任务验收有更新", "cancel": "任务已取消"}
 
 
 def can_receive(task, member_id, permissions, collaborators):
@@ -23,31 +27,9 @@ def can_receive(task, member_id, permissions, collaborators):
 
 
 def needs_confirmation(event, task, member_id):
+    if not task.requires_review: return False
     return (event.kind in {"create", "edit"} and member_id in {task.owner_member_id, task.reviewer_member_id}
         or event.kind == "submit" and member_id == task.reviewer_member_id)
-
-
-def notification_query(crew_id, actor):
-    require_permission(actor, "notification.read_self")
-    # Both a receiver record and CURRENT task visibility are necessary. The
-    # membership epoch prevents leave/rejoin from restoring old notifications.
-    visible = visible_tasks(crew_id, actor).with_only_columns(Task.id).correlate(None)
-    return select(Notification, NotificationRecipient, TaskChangeEvent, Task).join(NotificationRecipient,
-        (NotificationRecipient.crew_id == Notification.crew_id) & (NotificationRecipient.notification_id == Notification.id)
-    ).join(CrewMember, (CrewMember.crew_id == NotificationRecipient.crew_id) & (CrewMember.id == NotificationRecipient.member_id)
-    ).join(TaskChangeEvent, (TaskChangeEvent.crew_id == Notification.crew_id) & (TaskChangeEvent.id == Notification.source_event_id)
-    ).join(Task, (Task.crew_id == TaskChangeEvent.crew_id) & (Task.id == TaskChangeEvent.task_id)).where(
-        Notification.crew_id == crew_id, NotificationRecipient.member_id == actor.member_id,
-        CrewMember.status == "active", NotificationRecipient.membership_joined_at == CrewMember.joined_at,
-        Task.id.in_(visible))
-
-
-def view(row):
-    notice, recipient, event, task = row
-    return NotificationView(id=notice.id, event_type=notice.event_type, title=notice.title, summary=notice.summary,
-        created_at=notice.created_at, task_id=task.id, task_title=task.title, object_version=event.task_version,
-        current_object_version=task.lock_version, is_current=event.task_version == task.lock_version,
-        requires_confirmation=recipient.requires_confirmation, read_at=recipient.read_at, confirmed_at=recipient.confirmed_at)
 
 
 class NotificationRepository:
@@ -62,7 +44,7 @@ class NotificationRepository:
                 query = query.where(NotificationRecipient.read_at.is_(None) if unread else NotificationRecipient.read_at.is_not(None))
             if needs_acknowledgement is not None:
                 pending = (NotificationRecipient.requires_confirmation.is_(True) & NotificationRecipient.confirmed_at.is_(None)
-                    & (TaskChangeEvent.task_version == Task.lock_version))
+                    & current_condition())
                 query = query.where(pending if needs_acknowledgement else ~pending)
             total = await session.scalar(select(func.count()).select_from(query.subquery()))
             rows = (await session.execute(query.order_by(Notification.created_at.desc(), Notification.id.desc())
@@ -82,13 +64,13 @@ class NotificationRepository:
             row = (await session.execute(notification_query(crew_id, actor).where(Notification.id == notification_id)
                 .with_for_update(of=NotificationRecipient))).one_or_none()
             if row is None: raise not_found()
-            notice, recipient, event, task = row
+            notice, recipient, source = row
             if action == "acknowledge":
                 require_permission(actor, "notification.acknowledge_self")
-                if object_version != event.task_version: raise AuthError(409, "VERSION_CONFLICT", "请确认通知所引用的版本")
+                if object_version != source.object_version: raise AuthError(409, "VERSION_CONFLICT", "请确认通知所引用的版本")
                 if not recipient.requires_confirmation: raise AuthError(409, "CONFIRMATION_NOT_REQUIRED", "该通知不需要确认知悉")
-                if recipient.confirmed_at is None and task.lock_version != event.task_version:
-                    raise AuthError(409, "NOTIFICATION_OUTDATED", "任务已更新，请查看最新通知和当前任务")
+                if recipient.confirmed_at is None and not source.is_current:
+                    raise AuthError(409, "NOTIFICATION_OUTDATED", "安排已更新或失效，请查看最新通知与当前安排")
             elif action != "read": raise ValueError("Unsupported notification operation")
             changed = recipient.read_at is None or action == "acknowledge" and recipient.confirmed_at is None
             if changed:
@@ -97,7 +79,7 @@ class NotificationRepository:
                 if action == "acknowledge": recipient.confirmed_at = recipient.confirmed_at or now
                 session.add(AuditLog(crew_id=crew_id, actor_type="user", actor_id=user_id,
                     action=f"notification.{action}", target_type="notification", target_id=notice.id,
-                    result="success", request_id=request_id, after_summary={"object_version": event.task_version}))
+                    result="success", request_id=request_id, after_summary={"source_type": source.source_type, "object_version": source.object_version}))
                 await session.flush()
             result = view(row)
         return result
@@ -110,14 +92,23 @@ class NotificationConsumer:
 
     async def consume_once(self):
         async with self.sessions() as session, session.begin():
-            candidate = (await session.execute(select(TaskChangeEvent.id, TaskChangeEvent.crew_id)
-                .where(TaskChangeEvent.dispatch_status == "pending").order_by(TaskChangeEvent.created_at, TaskChangeEvent.id).limit(1))).one_or_none()
+            pending = union_all(
+                select(TaskChangeEvent.id, TaskChangeEvent.crew_id, literal('task').label('kind'), TaskChangeEvent.created_at)
+                    .where(TaskChangeEvent.dispatch_status == 'pending'),
+                select(PlanPublicationEvent.id, PlanPublicationEvent.crew_id, literal('plan').label('kind'), PlanPublicationEvent.created_at)
+                    .where(PlanPublicationEvent.consumed_at.is_(None)),
+                select(CallSheetEvent.id, CallSheetEvent.crew_id, literal('call_sheet').label('kind'), CallSheetEvent.created_at)
+                    .where(CallSheetEvent.consumed_at.is_(None))).subquery()
+            candidate = (await session.execute(select(pending.c.id, pending.c.crew_id, pending.c.kind)
+                .order_by(pending.c.created_at, pending.c.id, pending.c.kind).limit(1))).one_or_none()
             if candidate is None: return False
-            event_id, crew_id = candidate
+            event_id, crew_id, kind = candidate
             # Acquire the crew BEFORE the event/member rows. Task edits, exits
             # and role changes cannot interleave with recipient selection.
             crew = await session.scalar(select(Crew).where(Crew.id == crew_id).with_for_update())
             if crew is None: return False
+            if kind != 'task':
+                return await consume_publication(session, crew_id, event_id, kind)
             event = await session.scalar(select(TaskChangeEvent).where(TaskChangeEvent.id == event_id,
                 TaskChangeEvent.crew_id == crew_id, TaskChangeEvent.dispatch_status == "pending").with_for_update(skip_locked=True))
             if event is None: return False

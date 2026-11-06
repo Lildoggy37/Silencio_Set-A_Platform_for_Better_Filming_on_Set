@@ -10,7 +10,7 @@ import type { Task, TaskAction, TaskCommand, TaskDetail, TaskStatus, Submission 
 import { useBusinessSession } from '../crews/useBusinessSession'
 
 const actionNames = { create: '创建任务', edit: '调整任务', start: '开始任务', submit: '提交成果', review: '验收任务', cancel: '取消任务' }
-const reviewNames = { pending: '待确认', accepted: '已通过', rejected: '已退回', cancelled: '因任务取消关闭' }
+const reviewNames = { pending: '待确认', accepted: '已通过', rejected: '已退回', cancelled: '因任务取消关闭', completed: '已完成（无需验收）' }
 const formatDate = (value: string) => new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
 function localDeadline(value: string) {
   const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(value))
@@ -31,6 +31,7 @@ function TaskEditor({ crewId, initial, action, onClose, onSaved, onReload }: {
   const [title, setTitle] = useState(initial?.task.title ?? '')
   const [description, setDescription] = useState(initial?.task.description ?? '')
   const [owner, setOwner] = useState(initial?.task.owner_member_id ?? '')
+  const [requiresReview, setRequiresReview] = useState(initial ? initial.task.requires_review !== false : false)
   const [reviewer, setReviewer] = useState(initial?.task.reviewer_member_id ?? '')
   const [collaborators, setCollaborators] = useState(initial?.task.collaborator_member_ids ?? [])
   const [due, setDue] = useState(initial ? localDeadline(initial.task.due_at) : '')
@@ -54,8 +55,8 @@ function TaskEditor({ crewId, initial, action, onClose, onSaved, onReload }: {
     let body: Record<string, unknown> = { expected_lock_version: current?.task.lock_version }
     if (editing) {
       const cleanTitle = trimName(title); const cleanDescription = trimName(description.replace(/\r\n/g, '\n')) || null
-      if (!cleanTitle || Array.from(cleanTitle).length > 100 || !owner || !reviewer || !due || Array.from(cleanDescription ?? '').length > 3000 || collaborators.length > 20) throw new AccountError('VALIDATION_ERROR')
-      const values: Record<string, unknown> = { title: cleanTitle, description: cleanDescription, owner_member_id: owner, reviewer_member_id: reviewer, collaborator_member_ids: [...collaborators].sort() }
+      if (!cleanTitle || Array.from(cleanTitle).length > 100 || !owner || requiresReview && !reviewer || !due || Array.from(cleanDescription ?? '').length > 3000 || collaborators.length > 20) throw new AccountError('VALIDATION_ERROR')
+      const values: Record<string, unknown> = { title: cleanTitle, description: cleanDescription, owner_member_id: owner, requires_review: requiresReview, reviewer_member_id: requiresReview ? reviewer : owner, collaborator_member_ids: [...collaborators].sort() }
       if (action === 'create' || due !== localDeadline(current!.task.due_at)) {
         const date = new Date(`${due}+08:00`)
         if (!Number.isFinite(date.getTime()) || date.getTime() <= Date.now()) throw new AccountError('VALIDATION_ERROR')
@@ -110,7 +111,8 @@ function TaskEditor({ crewId, initial, action, onClose, onSaved, onReload }: {
   }
 
   const selectOptions = (selected: string[]) => <><option value="">选择在组成员</option>{[...new Set([...people.map(member => member.id), ...selected.filter(Boolean)])].map(id => <option key={id} value={id}>{people.find(member => member.id === id)?.display_name ?? current?.member_names[id] ?? '当前成员'} · {id.slice(0, 8)}</option>)}</>
-  return <Modal title={actionNames[action]} open footer={null} onCancel={onClose} closable={!pending} keyboard={!pending} mask={{ closable: !pending }} width={640}>
+  const actionTitle = action === 'submit' && current?.task.requires_review === false ? '完成任务' : actionNames[action]
+  return <Modal title={actionTitle} open footer={null} onCancel={onClose} closable={!pending} keyboard={!pending} mask={{ closable: !pending }} width={640}>
     <form className="account-form task-form" noValidate onSubmit={event => { event.preventDefault(); void submit() }}>
       {current && <p className="caption">{current.task.title} · {taskStatusNames[current.task.status]} · 版本 {current.task.lock_version}</p>}
       {editing ? <>
@@ -118,11 +120,11 @@ function TaskEditor({ crewId, initial, action, onClose, onSaved, onReload }: {
         <div className="account-field"><label htmlFor="task-description">任务说明（选填）</label><Input.TextArea id="task-description" value={description} disabled={disabled} onChange={event => setDescription(event.target.value)} rows={3} maxLength={12000} /></div>
         <ErrorNotice error={catalog.error} />
         <div className="task-form-grid"><div className="account-field"><label htmlFor="task-owner">负责人</label><select id="task-owner" value={owner} disabled={disabled} onChange={event => setOwner(event.target.value)}>{selectOptions([owner])}</select></div>
-          <div className="account-field"><label htmlFor="task-reviewer">确认人</label><select id="task-reviewer" value={reviewer} disabled={disabled} onChange={event => setReviewer(event.target.value)}>{selectOptions([reviewer])}</select></div></div>
+          <div className="account-field"><label className="task-review-option"><input type="checkbox" checked={requiresReview} disabled={disabled} onChange={event => setRequiresReview(event.target.checked)} />需要指定人验收</label>{requiresReview && <><label htmlFor="task-reviewer">确认人</label><select id="task-reviewer" value={reviewer} disabled={disabled} onChange={event => setReviewer(event.target.value)}>{selectOptions([reviewer])}</select></>}</div></div>
         <div className="account-field"><label htmlFor="task-collaborators">协作人（选填，最多20人）</label><select id="task-collaborators" multiple size={4} value={collaborators} disabled={disabled} onChange={event => setCollaborators(Array.from(event.target.selectedOptions, option => option.value).filter(Boolean))}>{selectOptions(collaborators)}</select></div>
         {catalog.data && peoplePage * 20 < catalog.data.total && <Button disabled={disabled || catalog.isFetching} onClick={() => setPeoplePage(peoplePage + 1)}>加载更多成员</Button>}
         <div className="account-field"><label htmlFor="task-due">截止时间（北京时间）</label><input id="task-due" type="datetime-local" value={due} disabled={disabled} onChange={event => setDue(event.target.value)} /></div>
-        <p className="caption">负责人提交、确认人验收。协作人不能代替二者，场戏关联暂未接入。</p>
+        <p className="caption">{requiresReview ? '负责人提交成果后，由指定确认人验收。' : '负责人填写完成说明即可完成任务。'}</p>
       </> : <>
         {action === 'start' ? <p>确认开始处理这项任务？</p> : <>
           {action === 'review' && <><SubmissionRecord item={current!.current_submission!} /><div className="account-field"><label htmlFor="task-decision">验收决定</label><select id="task-decision" value={decision} disabled={disabled} onChange={event => setDecision(event.target.value as 'accept' | 'reject')}><option value="accept">通过</option><option value="reject">退回修改</option></select></div></>}
@@ -134,7 +136,7 @@ function TaskEditor({ crewId, initial, action, onClose, onSaved, onReload }: {
       {frozen && <p className="account-note">结果尚未确认。输入已冻结；可明确恢复这次操作，沿用原操作标识和原内容，不会创建第二次变更。关闭或刷新后请先核对任务记录。</p>}
       {needsReload && <Button onClick={() => { void reload() }} loading={pending} disabled={!onReload}>重新读取任务状态</Button>}
       {!canAct && !frozen && <p className="account-note">当前已不能执行此操作，请关闭并核对任务。</p>}
-      <div className="role-actions"><Button onClick={onClose} disabled={pending}>关闭</Button><Button htmlType="submit" type="primary" aria-label={frozen ? '恢复这次操作结果' : `确认${actionNames[action]}`} loading={pending} disabled={needsReload || !canAct && !frozen}>{frozen ? '恢复这次操作结果' : `确认${actionNames[action]}`}</Button></div>
+      <div className="role-actions"><Button onClick={onClose} disabled={pending}>关闭</Button><Button htmlType="submit" type="primary" aria-label={frozen ? '恢复这次操作结果' : `确认${actionTitle}`} loading={pending} disabled={needsReload || !canAct && !frozen}>{frozen ? '恢复这次操作结果' : `确认${actionTitle}`}</Button></div>
     </form>
   </Modal>
 }
@@ -147,15 +149,15 @@ function TaskDetails({ crewId, userId, taskId, onClose, onChanged }: { crewId: s
   const history = useQuery({ queryKey: ['crews', userId, crewId, 'tasks', 'history', taskId, historyPage], queryFn: ({ signal }) => tasks.history(crewId, taskId, historyPage!, signal), enabled: historyPage !== null && !detail.isError, retry: false })
   useBusinessSession(detail.error ?? history.error)
   const data = detail.isError ? undefined : detail.data
-  return <><Modal title="任务详情" open footer={null} onCancel={onClose} width={700}>
+  return <><Modal title="任务详情" open={action === null} footer={null} onCancel={onClose} width={920} className="task-detail-modal">
     <ErrorNotice error={detail.error} />{detail.isPending && <p role="status">正在读取任务…</p>}
-    <Button loading={detail.isFetching} onClick={() => { void detail.refetch() }}>刷新任务详情</Button>
-    {data && <div className="task-detail"><h3>{data.task.title}</h3><p>{taskStatusNames[data.task.status]} · 截止 {formatDate(data.task.due_at)}（北京时间）</p>
-      <p className="task-text">{data.task.description || '未填写任务说明'}</p><p className="caption">负责人：{data.member_names[data.task.owner_member_id] ?? '成员资料暂不可用'} · 确认人：{data.member_names[data.task.reviewer_member_id] ?? '成员资料暂不可用'}</p>
+    {!data && <Button loading={detail.isFetching} onClick={() => { void detail.refetch() }}>刷新任务详情</Button>}
+    {data && <div className="task-detail"><div className="task-detail-heading"><div><p className="eyebrow">{taskStatusNames[data.task.status]}</p><h3>{data.task.title}</h3></div><Button loading={detail.isFetching} onClick={() => { void detail.refetch() }}>刷新任务详情</Button></div>
+      <dl className="task-detail-meta"><div><dt>负责人</dt><dd>{data.member_names[data.task.owner_member_id] ?? '成员资料暂不可用'}</dd></div><div><dt>{data.task.requires_review === false ? '完成方式' : '确认人'}</dt><dd>{data.task.requires_review === false ? '负责人直接完成' : data.member_names[data.task.reviewer_member_id] ?? '成员资料暂不可用'}</dd></div><div><dt>截止时间 · 北京时间</dt><dd>{formatDate(data.task.due_at)}</dd></div></dl>
+      <section className="task-description-section"><h4>任务内容</h4><p className="task-text">{data.task.description || '未填写任务说明'}</p>{data.task.collaborator_member_ids.length > 0 && <p className="caption">协作人：{data.task.collaborator_member_ids.map(id => data.member_names[id] ?? '成员资料暂不可用').join('、')}</p>}</section>
       {data.task.cancel_reason && <p className="task-text">取消原因：{data.task.cancel_reason}</p>}
       {data.current_submission && <SubmissionRecord item={data.current_submission} />}
-      <div className="member-actions">{data.task.allowed_actions.map(item => <Button key={item} onClick={() => setAction(item)}>{actionNames[item]}</Button>)}</div>
-      <p className="caption">已有 {data.submission_count} 次提交。任务通知可在顶部通知入口查看，知悉不等于完成或验收。</p>
+      <div className="task-detail-actions"><div className="member-actions">{data.task.allowed_actions.filter(item => item === 'edit' || item === 'cancel').map(item => <Button danger={item === 'cancel'} key={item} onClick={() => setAction(item)}>{actionNames[item]}</Button>)}</div><div className="member-actions">{data.task.allowed_actions.filter(item => item !== 'edit' && item !== 'cancel' && !(item === 'start' && data.task.requires_review === false)).map(item => <Button type="primary" key={item} onClick={() => setAction(item)}>{item === 'submit' && data.task.requires_review === false ? '完成任务' : actionNames[item]}</Button>)}</div></div>
       {data.submission_count > 0 && <Button onClick={() => setHistoryPage(1)}>查看历次提交</Button>}
     </div>}
     {data && historyPage !== null && <section><h3>提交历史</h3><ErrorNotice error={history.error} />{!history.isError && history.data && <>
@@ -172,6 +174,7 @@ export function TaskBoard({ crewId, userId, canManage, openTaskId, onTaskOpened 
   const [page, setPage] = useState(1)
   const [status, setStatus] = useState<TaskStatus | ''>('')
   const [creating, setCreating] = useState(false)
+  const [createdTaskId, setCreatedTaskId] = useState<string | null>(null)
   const [selected, setSelected] = useState<string | null>(null)
   useEffect(() => { if (openTaskId) { setSelected(openTaskId); onTaskOpened?.() } }, [openTaskId, onTaskOpened])
   const list = useQuery({ queryKey: ['crews', userId, crewId, 'tasks', 'list', page, status], queryFn: ({ signal }) => tasks.list(crewId, page, status, signal), retry: false })
@@ -180,9 +183,10 @@ export function TaskBoard({ crewId, userId, canManage, openTaskId, onTaskOpened 
   return <section className="task-board"><div className="section-heading"><h3>筹备任务</h3><div className="member-actions"><Button onClick={() => { setStatus(''); setPage(1) }}>全部任务</Button>{canManage && <Button type="primary" onClick={() => setCreating(true)}>创建任务</Button>}</div></div>
     <div className="task-filters"><label htmlFor="task-filter">任务状态</label><select id="task-filter" value={status} onChange={event => { setStatus(event.target.value as TaskStatus | ''); setPage(1) }}><option value="">全部状态</option>{Object.entries(taskStatusNames).map(([code, label]) => <option key={code} value={code}>{label}</option>)}</select><Button loading={list.isFetching} onClick={() => { void list.refetch() }}>刷新任务</Button></div>
     <ErrorNotice error={list.error} />{list.isPending && <p role="status">正在读取任务列表…</p>}
+    {createdTaskId && <div className="task-created-notice" role="status"><span>任务已创建。</span><Button type="text" onClick={() => setSelected(createdTaskId)}>查看新任务</Button><Button type="text" aria-label="收起创建成功提示" onClick={() => setCreatedTaskId(null)}>收起</Button></div>}
     {!list.isError && list.data && <>{list.data.items.length === 0 ? <p className="module-note">当前范围内没有任务。</p> : <ul className="task-list">{list.data.items.map(task => <li key={task.id}><button type="button" onClick={() => setSelected(task.id)}><strong>{task.title}</strong><span>{taskStatusNames[task.status]} · 截止 {formatDate(task.due_at)}</span></button></li>)}</ul>}
       <div className="list-pagination"><Button disabled={page === 1 || list.isFetching} onClick={() => setPage(page - 1)}>上一页任务</Button><span>第 {page} 页 · 共 {list.data.total} 项可见任务</span><Button disabled={page * 20 >= list.data.total || list.isFetching} onClick={() => setPage(page + 1)}>下一页任务</Button></div></>}
-    {creating && <TaskEditor crewId={crewId} action="create" onClose={() => setCreating(false)} onSaved={async id => { await refresh(); setSelected(id) }} />}
+    {creating && <TaskEditor crewId={crewId} action="create" onClose={() => setCreating(false)} onSaved={async id => { setStatus(''); setPage(1); setCreatedTaskId(id); await refresh() }} />}
     {selected && <TaskDetails key={selected} crewId={crewId} userId={userId} taskId={selected} onClose={() => setSelected(null)} onChanged={refresh} />}
   </section>
 }

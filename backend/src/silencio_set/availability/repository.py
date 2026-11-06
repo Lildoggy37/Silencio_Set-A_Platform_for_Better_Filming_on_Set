@@ -123,6 +123,8 @@ class AvailabilityRepository:
                     **interval.model_dump(), lock_version=1, created_at=now, updated_at=now))
             collection.membership_joined_at = member.joined_at
             collection.lock_version = version + 1; collection.updated_at = now
+            from silencio_set.plans.dependencies import mark_plan_review
+            await mark_plan_review(session, crew_id, 'availability_changed', now=now, member_id=member.id, range_start=body.range_start, range_end=body.range_end)
             session.add(AuditLog(crew_id=crew_id, actor_type="user", actor_id=user_id, action="availability.replace",
                 target_type="crew_member", target_id=member.id, result="success", request_id=request_id,
                 before_summary={"lock_version": version, "replaced_intervals": len(existing), "membership_reset": fresh_epoch},

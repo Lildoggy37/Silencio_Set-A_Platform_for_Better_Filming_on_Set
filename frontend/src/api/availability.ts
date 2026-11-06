@@ -6,7 +6,7 @@ export type TimeWindow = { starts_at: string; ends_at: string }
 export type CalendarInterval = TimeWindow & { availability: 'available' | 'unavailable' }
 export type CalendarRange = { range_start: string; range_end: string }
 export type Calendar = CalendarRange & { member_id: string; display_name: string; membership_joined_at: string; lock_version: number; updated_at: string | null;
-  intervals: CalendarInterval[]; unregistered: TimeWindow[]; plan_review_status: 'not_implemented' }
+  intervals: CalendarInterval[]; unregistered: TimeWindow[]; plan_review_status: 'not_implemented' | 'current_published_plans' }
 export type CalendarReplacement = CalendarRange & { expected_lock_version: number; expected_membership_joined_at: string; intervals: CalendarInterval[] }
 const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i
@@ -31,7 +31,7 @@ function intervals(raw: unknown, range: CalendarRange, maximum: number): Calenda
 function parse(v: unknown, range: CalendarRange): Calendar {
   if (!record(v) || !id(v.member_id) || typeof v.display_name !== 'string' || !v.display_name.trim() || Array.from(v.display_name).length > 30
     || !date(v.membership_joined_at) || !version(v.lock_version) || !(v.updated_at === null || date(v.updated_at)) || !seconds(v.range_start) || !seconds(v.range_end)
-    || Date.parse(v.range_start) !== Date.parse(range.range_start) || Date.parse(v.range_end) !== Date.parse(range.range_end) || v.plan_review_status !== 'not_implemented') throw invalid()
+    || Date.parse(v.range_start) !== Date.parse(range.range_start) || Date.parse(v.range_end) !== Date.parse(range.range_end) || !['not_implemented', 'current_published_plans'].includes(String(v.plan_review_status))) throw invalid()
   const values = intervals(v.intervals, range, 500)
   let cursor = Date.parse(range.range_start); const gaps: number[][] = []
   for (const item of values) { const start = Date.parse(item.starts_at); if (start > cursor) gaps.push([cursor, start]); cursor = Date.parse(item.ends_at) }
@@ -42,7 +42,7 @@ function parse(v: unknown, range: CalendarRange): Calendar {
     return { starts_at: value.starts_at, ends_at: value.ends_at }
   })
   return { member_id: v.member_id, display_name: v.display_name, membership_joined_at: v.membership_joined_at, lock_version: v.lock_version, updated_at: v.updated_at,
-    range_start: v.range_start, range_end: v.range_end, intervals: values, unregistered, plan_review_status: 'not_implemented' }
+    range_start: v.range_start, range_end: v.range_end, intervals: values, unregistered, plan_review_status: v.plan_review_status as Calendar['plan_review_status'] }
 }
 
 export function createAvailabilityClient(http: HttpClient) {

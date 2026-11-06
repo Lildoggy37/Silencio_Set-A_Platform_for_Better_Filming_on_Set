@@ -4,6 +4,8 @@ from sqlalchemy.exc import DBAPIError
 
 from silencio_set.accounts.errors import AuthError
 from silencio_set.accounts.profile import AccountUnavailable, ProfileIncomplete, require_completed_profile
+from silencio_set.resources.custody import CustodyRepository
+from silencio_set.resources.stock import StockRepository
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +18,17 @@ class ResourceService:
     async def execute(self, user, action, request_id, *, crew_id, **options):
         try:
             require_completed_profile(user)
+            if action in {"stock_create", "stock_change", "stock_list", "stock_get", "stock_movements"}:
+                stock = StockRepository(self.repository.sessions)
+                if action == "stock_list": return await stock.list(user.id, crew_id, **options)
+                if action == "stock_get": return await stock.get(user.id, crew_id, **options)
+                if action == "stock_movements": return await stock.movements(user.id, crew_id, **options)
+                return await stock.mutate(user.id, crew_id, action, options.pop("body"), request_id, **options)
+            if action in {"custody_authorize", "stock_authorize", "checkout", "return_resource", "checkout_list", "checkout_get"}:
+                custody = CustodyRepository(self.repository.sessions)
+                if action == "checkout_list": return await custody.list(user.id, crew_id, **options)
+                if action == "checkout_get": return await custody.get(user.id, crew_id, **options)
+                return await custody.mutate(user.id, crew_id, action, options.pop("body"), request_id, **options)
             if action in {"list", "get", "availability", "reservations", "reservation", "responsibilities"}:
                 return await getattr(self.repository, action)(user.id, crew_id, **options)
             return await self.repository.mutate(user.id, crew_id, action, options.pop("body"), request_id, **options)

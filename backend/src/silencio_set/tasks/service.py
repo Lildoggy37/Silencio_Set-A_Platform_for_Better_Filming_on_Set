@@ -13,6 +13,12 @@ class TaskService:
         self.repository = repository
         self.audit_repository = audit_repository
 
+    async def create_in_transaction(self, session, user, crew_id, body, request_id, idempotency_key):
+        """Share task rules and the caller's transaction for confirmed task batches."""
+        require_completed_profile(user)
+        return await self.repository.mutate_in_session(session, user.id, crew_id, 'create', body,
+            request_id, idempotency_key=idempotency_key)
+
     async def execute(self, user, action, request_id, *, crew_id, task_id=None, body=None, **options):
         try:
             require_completed_profile(user)

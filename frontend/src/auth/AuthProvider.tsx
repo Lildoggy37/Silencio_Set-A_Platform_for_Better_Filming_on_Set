@@ -14,10 +14,22 @@ import { createAvailabilityClient } from '../api/availability'
 import type { AvailabilityClient } from '../api/availability'
 import { createResourceClient } from '../api/resources'
 import type { ResourceClient } from '../api/resources'
+import { createScriptClient } from '../api/scripts'
+import type { ScriptClient } from '../api/scripts'
+import { createCreativeClient } from '../api/creative'
+import { createChangeClient } from '../api/changes'
+import type { ChangeClient } from '../api/changes'
+import type { CreativeClient } from '../api/creative'
+import { createPlanClient } from '../api/plans'
+import type { PlanClient } from '../api/plans'
+import { createCallSheetClient } from '../api/callSheets'
+import type { CallSheetClient } from '../api/callSheets'
+import { createDianeClient } from '../api/diane'
+import type { DianeClient } from '../api/diane'
 
 type AuthState = { status: 'checking' } | { status: 'anonymous' } | { status: 'unavailable'; error: unknown } | { status: 'authenticated'; user: User }
 type AuthContextValue = {
-  state: AuthState; api: AccountClient; crews: CrewClient; tasks: TaskClient; notifications: NotificationClient; availability: AvailabilityClient; resources: ResourceClient; busy: boolean
+  state: AuthState; api: AccountClient; crews: CrewClient; tasks: TaskClient; notifications: NotificationClient; availability: AvailabilityClient; resources: ResourceClient; scripts: ScriptClient; creative: CreativeClient; changes: ChangeClient; plans: PlanClient; callSheets: CallSheetClient; diane: DianeClient; busy: boolean
   refresh: () => Promise<void>
   login: (email: string, password: string) => Promise<void>
   logout: () => Promise<void>
@@ -34,6 +46,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [notifications] = useState(() => createNotificationClient(http))
   const [availability] = useState(() => createAvailabilityClient(http))
   const [resources] = useState(() => createResourceClient(http))
+  const [scripts] = useState(() => createScriptClient(http))
+  const [creative] = useState(() => createCreativeClient(http))
+  const [changes] = useState(() => createChangeClient(http))
+  const [plans] = useState(() => createPlanClient(http))
+  const [callSheets] = useState(() => createCallSheetClient(http))
+  const [diane] = useState(() => createDianeClient(http))
   const [state, setState] = useState<AuthState>({ status: 'checking' })
   const [busy, setBusy] = useState(false)
   const current = useRef(state)
@@ -87,7 +105,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   const value: AuthContextValue = {
-    state, api, crews, tasks, notifications, availability, resources, busy,
+    state, api, crews, tasks, notifications, availability, resources, scripts, creative, changes, plans, callSheets, diane, busy,
     refresh: () => checkSession(),
     login: (email, password) => withLock(async ticket => {
       try {

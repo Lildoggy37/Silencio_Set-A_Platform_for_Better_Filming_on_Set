@@ -56,7 +56,7 @@ def test_startup_config_errors_are_sanitized(monkeypatch):
     assert "secret-example" not in str(exc.value)
 
 
-def test_cannot_enable_unimplemented_diane():
+def test_cannot_enable_diane_without_authentication_and_provider_settings():
     with pytest.raises(ValidationError):
         Settings(_env_file=None, diane_enabled=True)
 
@@ -74,6 +74,10 @@ def test_worker_has_three_declared_json_only_queues():
     assert not worker.conf.task_create_missing_queues
     assert worker.conf.result_backend is None
     assert not worker.conf.task_acks_late
+    assert worker.amqp.queues['agent'].queue_arguments == {'x-queue-type':'quorum'}
+    assert worker.conf.worker_detect_quorum_queues
+    assert {q.name:q.routing_key for q in worker.conf.task_queues} == {
+        'notifications':'notifications','documents':'documents','agent':'agent'}
     worker.close()
 
 

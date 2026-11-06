@@ -1,4 +1,4 @@
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
@@ -40,6 +40,27 @@ from silencio_set.availability.service import AvailabilityService
 from silencio_set.api.resources import router as resources_router
 from silencio_set.resources.repository import ResourceRepository, check_resource_responsibilities
 from silencio_set.resources.service import ResourceService
+from silencio_set.api.scripts import router as scripts_router
+from silencio_set.scripts.repository import ScriptRepository
+from silencio_set.scripts.service import ScriptService
+from silencio_set.infrastructure.private_files import PrivateFileStorage
+from silencio_set.locations.repository import LocationRepository
+from silencio_set.locations.service import LocationService
+from silencio_set.api.locations import router as locations_router
+from silencio_set.api.creative import router as creative_router
+from silencio_set.creative.service import CreativeService
+from silencio_set.creative.repository import CreativeRepository
+from silencio_set.api.changes import router as changes_router
+from silencio_set.changes.repository import ChangeRepository
+from silencio_set.changes.service import ChangeService
+from silencio_set.api.plans import router as plans_router
+from silencio_set.plans.repository import PlanRepository
+from silencio_set.plans.service import PlanService
+from silencio_set.plans.dependencies import check_plan_responsibilities
+from silencio_set.api.call_sheets import router as call_sheets_router
+from silencio_set.call_sheets.repository import CallSheetRepository
+from silencio_set.call_sheets.service import CallSheetService
+from silencio_set.api.diane import router as diane_router
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -48,6 +69,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         dependencies = Dependencies(config)
+        agent_resources = AsyncExitStack()
         app.state.dependencies = dependencies
         try:
             app.state.auth = (
@@ -61,7 +83,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     MailJobs(app.state.auth.repository.sessions)) if config.mail_enabled else None
             )
             app.state.crews = CrewService(CrewRepository(app.state.auth.repository.sessions),
-                OrganizationRepository(app.state.auth.repository.sessions, exit_checks=[check_task_responsibilities, check_resource_responsibilities])) if config.auth_enabled else None
+                OrganizationRepository(app.state.auth.repository.sessions, exit_checks=[check_task_responsibilities, check_resource_responsibilities, check_plan_responsibilities])) if config.auth_enabled else None
             app.state.tasks = TaskService(TaskRepository(app.state.auth.repository.sessions),
                 app.state.crews.repository) if config.auth_enabled else None
             app.state.notifications = NotificationService(NotificationRepository(app.state.auth.repository.sessions),
@@ -70,11 +92,41 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 app.state.crews.repository) if config.auth_enabled else None
             app.state.resources = ResourceService(ResourceRepository(app.state.auth.repository.sessions),
                 app.state.crews.repository) if config.auth_enabled else None
+            app.state.locations = LocationService(LocationRepository(app.state.auth.repository.sessions),
+                app.state.crews.repository,PrivateFileStorage(config.location_photo_storage_root)) if config.auth_enabled else None
+            app.state.scripts = ScriptService(ScriptRepository(app.state.auth.repository.sessions),
+                app.state.crews.repository, PrivateFileStorage(config.script_storage_root)) if config.auth_enabled else None
+            app.state.creative = CreativeService(CreativeRepository(app.state.auth.repository.sessions),
+                app.state.crews.repository) if config.auth_enabled else None
+            app.state.changes = ChangeService(ChangeRepository(app.state.auth.repository.sessions),
+                app.state.crews.repository) if config.auth_enabled else None
+            app.state.plans = PlanService(PlanRepository(app.state.auth.repository.sessions, preflight_ttl_seconds=config.plan_preflight_ttl_seconds),
+                app.state.crews.repository) if config.auth_enabled else None
+            app.state.call_sheets = CallSheetService(CallSheetRepository(app.state.auth.repository.sessions),
+                app.state.crews.repository) if config.auth_enabled else None
             app.state.invitations = InvitationService(InvitationRepository(app.state.auth.repository.sessions,
                 InvitationPayloads(app.state.auth.cache, config.mail_payload_key.get_secret_value()) if config.mail_enabled else None),
                 app.state.crews.repository) if config.auth_enabled else None
+            from silencio_set.diane.proposals import ProposalRepository
+            app.state.task_proposals = ProposalRepository(app.state.auth.repository.sessions, app.state.tasks) if config.auth_enabled else None
+            from silencio_set.diane.memory import ConversationRepository
+            app.state.diane_conversations = ConversationRepository(app.state.auth.repository.sessions) if config.auth_enabled else None
+            app.state.diane = None
+            if config.diane_enabled:
+                from silencio_set.diane.service import DianeService
+                from silencio_set.diane.tools import BusinessServices
+                from silencio_set.diane.checkpoints import checkpoint_store
+                checkpointer = await agent_resources.enter_async_context(checkpoint_store(config))
+                app.state.diane = DianeService(config, BusinessServices(
+                    crews=app.state.crews, tasks=app.state.tasks, resources=app.state.resources,
+                    plans=app.state.plans, availability=app.state.availability,
+                    creative=app.state.creative, changes=app.state.changes),
+                    conversations=app.state.diane_conversations, checkpointer=checkpointer)
             yield
         finally:
+            if getattr(app.state, 'diane', None) is not None:
+                await app.state.diane.close()
+            await agent_resources.aclose()
             await dependencies.close()
 
     app = FastAPI(title="Silencio Set API", version="0.1.0", lifespan=lifespan)
@@ -99,4 +151,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(handover_router)
     app.include_router(availability_router)
     app.include_router(resources_router)
+    app.include_router(locations_router)
+    app.include_router(scripts_router)
+    app.include_router(creative_router)
+    app.include_router(changes_router)
+    app.include_router(plans_router)
+    app.include_router(call_sheets_router)
+    app.include_router(diane_router)
     return app

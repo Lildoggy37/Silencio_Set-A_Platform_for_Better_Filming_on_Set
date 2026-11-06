@@ -16,6 +16,9 @@ class NotificationService:
     async def execute(self, user, action, request_id, *, crew_id, notification_id=None, **options):
         try:
             require_completed_profile(user)
+            if action == 'receipts':
+                from silencio_set.notifications.receipts import read
+                return await read(self.repository, user.id, crew_id, **options)
             if action == "list": return await self.repository.list(user.id, crew_id, **options)
             if action == "get": return await self.repository.get(user.id, crew_id, notification_id)
             return await self.repository.mark(user.id, crew_id, notification_id, action, request_id, **options)

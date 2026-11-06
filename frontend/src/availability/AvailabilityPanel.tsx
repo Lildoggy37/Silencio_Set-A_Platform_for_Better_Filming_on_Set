@@ -32,7 +32,7 @@ function canonical(values: CalendarInterval[]) {
 function CalendarRows({ data }: { data: Calendar }) {
   const rows = [...data.intervals.map(item => ({ ...item, label: item.availability === 'available' ? '可用' : '不可用' })),
     ...data.unregistered.map(item => ({ ...item, label: '未登记（未知）' }))].sort((a, b) => Date.parse(a.starts_at) - Date.parse(b.starts_at))
-  return <div className="directory-scroll"><table className="availability-table"><caption>当前登记 · 北京时间，结束时刻不包含在区间内</caption><thead><tr><th scope="col">开始</th><th scope="col">结束</th><th scope="col">状态</th></tr></thead><tbody>{rows.map((item, index) => <tr key={index}><td>{display(item.starts_at)}</td><td>{display(item.ends_at)}</td><td>{item.label}</td></tr>)}</tbody></table></div>
+  return <div className="directory-scroll"><table className="availability-table"><caption>登记时间 · 北京时间</caption><thead><tr><th scope="col">开始</th><th scope="col">结束</th><th scope="col">状态</th></tr></thead><tbody>{rows.map((item, index) => <tr key={index}><td>{display(item.starts_at)}</td><td>{display(item.ends_at)}</td><td>{item.label}</td></tr>)}</tbody></table></div>
 }
 
 export function AvailabilityPanel({ crewId, userId, selfMemberId, mode, onClose }: {
@@ -129,18 +129,18 @@ export function AvailabilityPanel({ crewId, userId, selfMemberId, mode, onClose 
   }
 
   const patchDraft = (key: number, change: Partial<Draft>) => { setMessage(''); setDraft(previous => previous.map(item => item.key === key ? { ...item, ...change } : item)) }
-  return <Modal title={mode === 'own' ? '我的档期' : '剧组档期（只读）'} open onCancel={onClose} footer={null} width={900} closable={!pending} keyboard={!pending} mask={{ closable: !pending }}>
-    <div className="availability-panel"><p>未登记的时间是未知状态，不代表可用。所有时间按北京时间输入和展示，可跨日。</p>
-      <div className="task-form-grid"><div className="account-field"><label htmlFor="calendar-range-start">查询开始</label><input id="calendar-range-start" type="datetime-local" step="1" value={start} disabled={pending || review} onChange={event => setStart(event.target.value)} /></div>
+  return <Modal title={mode === 'own' ? '我的档期' : '剧组档期（只读）'} open onCancel={onClose} footer={null} width={1000} className="calendar-modal" closable={!pending} keyboard={!pending} mask={{ closable: !pending }}>
+    <div className="availability-panel"><p className="calendar-intro">{mode === 'own' ? '登记你的可用时间，方便剧组安排拍摄。' : '选择时间范围，查看成员的可用情况。'}未登记的时间将显示为未知。</p>
+      <div className="calendar-range-bar"><div className="task-form-grid"><div className="account-field"><label htmlFor="calendar-range-start">查询开始</label><input id="calendar-range-start" type="datetime-local" step="1" value={start} disabled={pending || review} onChange={event => setStart(event.target.value)} /></div>
         <div className="account-field"><label htmlFor="calendar-range-end">查询结束</label><input id="calendar-range-end" type="datetime-local" step="1" value={end} disabled={pending || review} onChange={event => setEnd(event.target.value)} /></div></div>
-      <Button disabled={pending} onClick={() => { void readRange() }}>{mode === 'own' ? '读取所选范围并替换草稿' : '读取所选范围'}</Button><p className="caption">每次最多31天。{mode === 'own' && '读取所选范围会替换当前草稿；保存只替换已读取范围，范围外登记保留。'}</p>
+      <Button disabled={pending} onClick={() => { void readRange() }}>查看时段</Button></div>
       <ErrorNotice error={mode === 'own' ? own.error : group.error} /><ErrorNotice error={error} />
       {mode === 'own' && own.isPending && <p role="status">正在读取本人档期…</p>}
       {mode === 'own' && baseline && !own.isError && <>
-        <h3>{baseline.display_name}的当前登记</h3><CalendarRows data={own.data ?? baseline} />
+        <div className="section-heading calendar-editor-heading"><h3>{baseline.display_name}的时间安排</h3><span>北京时间</span></div>
+        <details className="calendar-saved"><summary>查看已保存的登记</summary><CalendarRows data={own.data ?? baseline} /></details>
         {tooDense ? <p className="account-note">当前范围登记超过100段，请缩小范围后编辑。</p> : <>
-          <h3>范围内登记草稿</h3><p className="caption">省略的时间段会变为未登记。时间段不允许重叠，相邻区间可以衔接。</p>
-          {draft.length === 0 && <p>当前草稿没有时间段；保存后该范围将全部变为未登记。</p>}
+          {draft.length === 0 && <div className="calendar-empty"><strong>暂未添加时间段</strong><p>添加可用或不可用的时间，再核对保存。</p></div>}
           {draft.map((item, index) => <fieldset className="availability-draft" key={item.key} disabled={disabled}><legend>时间段 {index + 1}</legend>
             <div className="task-form-grid"><div className="account-field"><label htmlFor={`calendar-start-${item.key}`}>开始时间 {index + 1}</label><input id={`calendar-start-${item.key}`} type="datetime-local" step="1" value={item.starts} onChange={event => patchDraft(item.key, { starts: event.target.value })} /></div>
               <div className="account-field"><label htmlFor={`calendar-end-${item.key}`}>结束时间 {index + 1}</label><input id={`calendar-end-${item.key}`} type="datetime-local" step="1" value={item.ends} onChange={event => patchDraft(item.key, { ends: event.target.value })} /></div></div>
@@ -150,7 +150,7 @@ export function AvailabilityPanel({ crewId, userId, selfMemberId, mode, onClose 
           <Button disabled={disabled || draft.length >= 100} onClick={() => { setMessage(''); setDraft(previous => [...previous, { key: ++sequence.current, starts: '', ends: '', status: '' }]) }}>添加时间段</Button>
           {review && <div className="account-note"><h3>核对档期替换</h3><p>{display(baseline.range_start)} 至 {display(baseline.range_end)}（北京时间）</p><p>将用草稿中的 {draft.length} 段登记替换该范围；未列出的部分变为未知，范围外保持不变。</p>{draft.length === 0 && <p>本次将清空所选范围内的登记。</p>}</div>}
           {(needsReload || staleBaseline) && <div className="account-note"><p>保存结果未确认或当前版本已变化。草稿保留，不自动再次提交。</p><Button disabled={pending} onClick={() => { void rereadKeepingDraft() }}>读取当前档期并保留草稿</Button></div>}
-          <div className="role-actions">{review ? <><Button disabled={pending} onClick={() => setReview(false)}>返回修改草稿</Button><Button type="primary" aria-label="确认替换本人档期" loading={pending} disabled={!changed || needsReload || staleBaseline || own.isFetching} onClick={() => { void save() }}>确认替换本人档期</Button></>
+          <div className="role-actions calendar-save-actions">{review ? <><Button disabled={pending} onClick={() => setReview(false)}>返回修改草稿</Button><Button type="primary" aria-label="确认替换本人档期" loading={pending} disabled={!changed || needsReload || staleBaseline || own.isFetching} onClick={() => { void save() }}>确认替换本人档期</Button></>
             : <Button type="primary" disabled={!changed || pending || needsReload || staleBaseline || own.isFetching} onClick={() => { try { values(); setError(null); setReview(true) } catch (failure) { setError(failure) } }}>核对档期修改</Button>}</div>
         </>}
       </>}
@@ -159,9 +159,9 @@ export function AvailabilityPanel({ crewId, userId, selfMemberId, mode, onClose 
         {group.isPending && <p role="status">正在读取授权范围内的档期…</p>}
         {!group.isError && group.data && <>{group.data.items.length === 0 && <p>当前范围没有可查看的在组成员。</p>}{group.data.items.map(item => <section key={item.member_id} className="task-submission"><h3>{item.display_name}</h3><CalendarRows data={item} />{!memberFilter && <Button onClick={() => { setMemberFilter({ id: item.member_id, name: item.display_name }); setPage(1) }}>仅查看{item.display_name}的档期</Button>}</section>)}
           <div className="list-pagination"><Button disabled={page === 1 || group.isFetching} onClick={() => setPage(page - 1)}>上一页成员档期</Button><span>第 {page} 页 · 共 {group.data.total} 名成员</span><Button disabled={page * 20 >= group.data.total || group.isFetching} onClick={() => setPage(page + 1)}>下一页成员档期</Button></div></>}
-        <p className="caption">这里仅查看登记，不能代替其他成员修改。</p>
       </>}
-      {message && <p role="status">{message}</p>}<p className="module-note">档期仅表示成员登记，相关拍摄安排请另行与剧组核对。</p>
+      {message && <p role="status">{message}</p>}
+      <details className="calendar-rules"><summary>登记规则与范围说明</summary><p>每次最多查看31天，时间按北京时间输入，可跨日。时间段不能重叠，结束时刻不计入该段。</p>{mode === 'own' ? <p>查看其他时段会替换当前草稿。保存将替换已读取范围的登记，未列出的时间变为未知；清空后保存会删除该范围登记。</p> : <p>剧组档期仅供查看，成员自行维护本人的登记。</p>}</details>
     </div>
   </Modal>
 }

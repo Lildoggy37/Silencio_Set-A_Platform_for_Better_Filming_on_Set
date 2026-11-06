@@ -6,12 +6,12 @@ export const taskStatusNames = { pending: '待处理', in_progress: '进行中',
 export type TaskStatus = keyof typeof taskStatusNames
 export type TaskAction = 'start' | 'submit' | 'review' | 'edit' | 'cancel'
 export type Task = {
-  id: string; crew_id: string; title: string; description: string | null; owner_member_id: string; reviewer_member_id: string; created_by_member_id: string
+  id: string; crew_id: string; title: string; description: string | null; owner_member_id: string; reviewer_member_id: string; requires_review?: boolean; created_by_member_id: string
   collaborator_member_ids: string[]; due_at: string; status: TaskStatus; cancel_reason: string | null; lock_version: number; created_at: string; updated_at: string; allowed_actions: TaskAction[]
 }
-export type Submission = { id: string; submission_no: number; submitted_by: string; completion_note: string; review_status: 'pending' | 'accepted' | 'rejected' | 'cancelled'; reviewed_by: string | null; review_note: string | null; submitted_at: string; reviewed_at: string | null }
+export type Submission = { id: string; submission_no: number; submitted_by: string; completion_note: string; review_status: 'pending' | 'accepted' | 'rejected' | 'cancelled' | 'completed'; reviewed_by: string | null; review_note: string | null; submitted_at: string; reviewed_at: string | null }
 export type TaskDetail = { task: Task; member_names: Record<string, string>; current_submission: Submission | null; submission_count: number }
-export type TaskInput = { title: string; description: string | null; owner_member_id: string; reviewer_member_id: string; collaborator_member_ids: string[]; due_at: string }
+export type TaskInput = { requires_review?: boolean; title: string; description: string | null; owner_member_id: string; reviewer_member_id: string; collaborator_member_ids: string[]; due_at: string }
 export type TaskCommand = { action: 'create' | TaskAction; taskId?: string; body: Record<string, unknown>; key?: string }
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i
 const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
@@ -25,20 +25,21 @@ function checkedPage(v: number) { if (!Number.isInteger(v) || v < 1 || v > 100_0
 
 function parseTask(v: unknown): Task {
   if (!record(v) || !id(v.id) || !id(v.crew_id) || !id(v.owner_member_id) || !id(v.reviewer_member_id) || !id(v.created_by_member_id)
+    || v.requires_review !== undefined && typeof v.requires_review !== 'boolean'
     || !text(v.title, 100) || !(v.description === null || text(v.description, 3000)) || !date(v.due_at) || !date(v.created_at) || !date(v.updated_at)
     || typeof v.status !== 'string' || !Object.hasOwn(taskStatusNames, v.status) || !integer(v.lock_version) || v.lock_version < 1 || v.lock_version > 2_147_483_647
     || !Array.isArray(v.collaborator_member_ids) || v.collaborator_member_ids.length > 20 || !v.collaborator_member_ids.every(id) || new Set(v.collaborator_member_ids).size !== v.collaborator_member_ids.length
     || !Array.isArray(v.allowed_actions) || !v.allowed_actions.every(a => ['start', 'submit', 'review', 'edit', 'cancel'].includes(String(a)))
     || !(v.status === 'cancelled' ? text(v.cancel_reason, 500) : v.cancel_reason === null)) throw invalid()
-  return { id: v.id, crew_id: v.crew_id, title: v.title, description: v.description, due_at: v.due_at, owner_member_id: v.owner_member_id,
+  return { id: v.id, crew_id: v.crew_id, title: v.title, description: v.description, requires_review: v.requires_review === undefined ? true : v.requires_review as boolean, due_at: v.due_at, owner_member_id: v.owner_member_id,
     reviewer_member_id: v.reviewer_member_id, created_by_member_id: v.created_by_member_id, status: v.status as TaskStatus, cancel_reason: v.cancel_reason as string | null,
     collaborator_member_ids: [...v.collaborator_member_ids], allowed_actions: [...v.allowed_actions] as TaskAction[], lock_version: v.lock_version, created_at: v.created_at, updated_at: v.updated_at }
 }
 function parseSubmission(v: unknown): Submission {
   if (!record(v) || !id(v.id) || !id(v.submitted_by) || !integer(v.submission_no) || v.submission_no < 1 || !text(v.completion_note, 2000)
-    || !['pending', 'accepted', 'rejected', 'cancelled'].includes(String(v.review_status)) || !date(v.submitted_at)
+    || !['pending', 'accepted', 'rejected', 'cancelled', 'completed'].includes(String(v.review_status)) || !date(v.submitted_at)
     || !(v.review_note === null || text(v.review_note, 500))
-    || !(v.review_status === 'pending' ? v.reviewed_by === null && v.reviewed_at === null : id(v.reviewed_by) && date(v.reviewed_at))) throw invalid()
+    || !(['pending', 'completed'].includes(String(v.review_status)) ? v.reviewed_by === null && v.reviewed_at === null : id(v.reviewed_by) && date(v.reviewed_at))) throw invalid()
   if (v.review_status === 'rejected' && !text(v.review_note, 500)) throw invalid()
   return { id: v.id, submission_no: v.submission_no, submitted_by: v.submitted_by, completion_note: v.completion_note, review_status: v.review_status as Submission['review_status'],
     reviewed_by: v.reviewed_by as string | null, review_note: v.review_note as string | null, submitted_at: v.submitted_at, reviewed_at: v.reviewed_at as string | null }
@@ -79,7 +80,7 @@ export function createTaskClient(http: HttpClient) {
       const result = parseTask(await http.mutate(path, command.body, command.action === 'edit' ? 'PATCH' : 'POST', command.action === 'create' ? [201] : [200], keyed ? command.key : undefined))
       if (result.crew_id !== crewId || command.taskId && result.id !== command.taskId) throw invalid()
       if (command.action !== 'create' && result.lock_version !== Number(command.body.expected_lock_version) + 1) throw invalid()
-      const expectedStatus = command.action === 'create' ? 'pending' : command.action === 'start' ? 'in_progress' : command.action === 'submit' ? 'pending_review'
+      const expectedStatus = command.action === 'create' ? 'pending' : command.action === 'start' ? 'in_progress' : command.action === 'submit' ? result.requires_review === false ? 'completed' : 'pending_review'
         : command.action === 'cancel' ? 'cancelled' : command.action === 'review' ? command.body.decision === 'accept' ? 'completed' : 'in_progress' : undefined
       if (expectedStatus && result.status !== expectedStatus || command.action === 'create' && result.lock_version !== 1) throw invalid()
       return result

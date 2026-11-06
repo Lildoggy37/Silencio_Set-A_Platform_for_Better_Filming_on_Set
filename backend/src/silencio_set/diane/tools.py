@@ -75,6 +75,13 @@ def observed(data, kind, label, record_id=None):
 
 def build_tools(services: BusinessServices, user, crew_id, request_id):
     # Every invocation goes through the same authorized service as the page.
+    @tool(args_schema=PageInput)
+    async def list_members(page=1):
+        """查询当前剧组在组成员的总人数、姓名和岗位。total是成员总数，items仅为当前页；人数和名单应使用本工具，不能从档期记录推算。"""
+        data = await services.crews.execute(user, 'member.list', request_id,
+            crew_id=crew_id, page=page, page_size=10)
+        return observed(data, 'members', '当前剧组成员')
+
     @tool(args_schema=TaskFilter)
     async def list_tasks(page=1, status=None):
         """分页查询当前剧组中本人可见的筹备任务，可按状态过滤。不能据单页推断全量。"""
@@ -147,4 +154,5 @@ def build_tools(services: BusinessServices, user, crew_id, request_id):
         return observed(data, 'changes', '需要重新确认的安排')
 
     return [list_tasks, get_task, list_resources, get_resource, resource_availability,
-            list_plans, get_plan_version, next_shoot, crew_availability, get_creative_draft, list_preparation_issues]
+            list_plans, get_plan_version, next_shoot, crew_availability, get_creative_draft,
+            list_preparation_issues, list_members]

@@ -114,3 +114,29 @@ test('background chat subscribes to progress and reconnects after folding withou
   expect(api.enqueue).toHaveBeenCalledTimes(1)
   expect(api.converse).not.toHaveBeenCalled()
 })
+
+test('failed runs without a model result show a failure and diagnostic identifier',async()=>{
+  api.conversations.mockResolvedValue([{id:'saved-1',title:'后台故障'}])
+  api.history.mockResolvedValue({conversation:{id:'saved-1',title:'后台故障'},turns:[
+    {id:'failed-run-1',ordinal:1,question:'团队人数',status:'failed',phase:'execution_error',
+      progress_version:4,result:null}],has_earlier:false})
+  start();fireEvent.click(await screen.findByRole('button',{name:'Diane'}))
+  expect(await screen.findByRole('alert')).toHaveProperty('textContent',expect.stringContaining('Diane 执行失败'))
+  expect(screen.getByText('查询标识：failed-run-1')).toBeTruthy()
+  expect(screen.queryByText('上次执行未完成，可以重新提问。')).toBeNull()
+  expect(api.enqueue).not.toHaveBeenCalled()
+})
+
+test('crew directory evidence can navigate to the member page',async()=>{
+  const members={kind:'members',record_id:null,label:'当前剧组成员'}
+  api.converse.mockResolvedValue({id:'turn-1',ordinal:1,question:'剧组人数',status:'completed',
+    result:{...result,answer:'当前剧组有7名成员。',sources:[members]}})
+  const navigate=start();fireEvent.click(await screen.findByRole('button',{name:'Diane'}))
+  await waitFor(()=>expect((screen.getByLabelText('想了解什么？') as HTMLTextAreaElement).disabled).toBe(false))
+  fireEvent.change(screen.getByLabelText('想了解什么？'),{target:{value:'剧组人数'}})
+  fireEvent.click(screen.getByRole('button',{name:'查询剧组资料'}))
+  await screen.findByText('当前剧组有7名成员。')
+  fireEvent.click(screen.getByText('查看依据 ↗'))
+  fireEvent.click(screen.getByRole('button',{name:'当前剧组成员 ↗'}))
+  expect(navigate).toHaveBeenCalledWith(members)
+})

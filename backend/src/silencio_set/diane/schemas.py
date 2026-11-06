@@ -25,7 +25,7 @@ class DianeStatus(BaseModel):
 
 
 class Evidence(BaseModel):
-    kind: Literal['tasks', 'task', 'resources', 'resource', 'plans', 'plan', 'plan_version', 'availability', 'creative', 'changes']
+    kind: Literal['tasks', 'task', 'resources', 'resource', 'plans', 'plan', 'plan_version', 'availability', 'creative', 'changes', 'members']
     label: str
     record_id: UUID | None = None
 

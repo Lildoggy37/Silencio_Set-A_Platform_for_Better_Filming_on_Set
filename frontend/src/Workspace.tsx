@@ -123,6 +123,7 @@ export default function Workspace({ user, preview, onAccount, initialCrewId }: {
       else if (source.kind === 'resource' && source.record_id) openResource(source.record_id)
       else if (source.kind === 'resources') setTab('资源')
       else if (source.kind === 'plans') setTab('排期')
+      else if (source.kind === 'members') setTab('成员')
       else if (source.kind === 'availability') setCalendar('crew')
       else setTab('总览')
     }} />}

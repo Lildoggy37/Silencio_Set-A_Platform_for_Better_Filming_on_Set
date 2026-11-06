@@ -99,7 +99,7 @@ class AgentJobs:
                 else:
                     turn.result = result.model_dump(mode='json') if result is not None else None
                     status = 'completed' if result is not None and result.status == 'completed' else 'failed'
-                    self.terminal(turn, status, status, now)
+                    self.terminal(turn, status, status if result is not None else 'execution_error', now)
             await session.flush()
             return TurnView.model_validate(turn)
 

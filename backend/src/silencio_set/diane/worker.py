@@ -11,6 +11,12 @@ from silencio_set.infrastructure.event_loop import new_event_loop
 logger = logging.getLogger(__name__)
 
 
+def exception_types(error):
+    if isinstance(error, BaseExceptionGroup):
+        return sorted({name for child in error.exceptions for name in exception_types(child)})
+    return [type(error).__name__]
+
+
 async def execute_job(service, jobs, events, turn_id):
     execution = await jobs.claim(turn_id, service.settings.diane_timeout_seconds)
     if execution is None: return
@@ -23,7 +29,7 @@ async def execute_job(service, jobs, events, turn_id):
         result = await service.answer_turn(execution.user, execution.crew_id, execution.conversation_id,
             execution.turn, execution.request_id, on_progress=progress)
     except Exception as error:
-        logger.warning('diane_job_failed run_id=%s exception_type=%s', turn_id, type(error).__name__)
+        logger.warning('diane_job_failed run_id=%s exception_types=%s', turn_id, ','.join(exception_types(error)))
     finally:
         with anyio.CancelScope(shield=True):
             turn = await jobs.complete(execution, result)
